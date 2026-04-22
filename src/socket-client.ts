@@ -60,16 +60,46 @@ function formatDmTapMessage(payload: unknown): string | null {
     typeof data.voiceSimpleId === "number" && Number.isFinite(data.voiceSimpleId)
       ? data.voiceSimpleId
       : null;
+  const imageSimpleId =
+    typeof data.imageSimpleId === "number" && Number.isFinite(data.imageSimpleId)
+      ? data.imageSimpleId
+      : null;
   const isVoice = Boolean(
     data.voiceMediaUrl || /voice message/i.test(text) || /mensagem de voz/i.test(text),
   );
+  const isPhoto = Boolean(
+    data.imageMediaUrl ||
+      /sent a photo|enviou uma foto|sent an image|photo message|foto\./i.test(text),
+  );
 
-  if (!text && isVoice) {
+  if (isVoice) {
+    if (!text) {
+      const sender = senderUsername || senderName || senderId || "desconhecido";
+      if (voiceSimpleId != null) {
+        return `[#${voiceSimpleId}] ${sender}: (audio)`;
+      }
+      return `${sender}: (audio)`;
+    }
     const sender = senderUsername || senderName || senderId || "desconhecido";
     if (voiceSimpleId != null) {
-      return `[#${voiceSimpleId}] ${sender}: (audio)`;
+      return `[#${voiceSimpleId}] ${sender}: ${text}`;
     }
-    return `${sender}: (audio)`;
+    return `${sender}: ${text}`;
+  }
+
+  if (isPhoto) {
+    if (!text) {
+      const sender = senderUsername || senderName || senderId || "desconhecido";
+      if (imageSimpleId != null) {
+        return `[#${imageSimpleId}] ${sender}: (foto)`;
+      }
+      return `${sender}: (foto)`;
+    }
+    const sender = senderUsername || senderName || senderId || "desconhecido";
+    if (imageSimpleId != null) {
+      return `[#${imageSimpleId}] ${sender}: ${text}`;
+    }
+    return `${sender}: ${text}`;
   }
 
   if (!text) {
@@ -77,9 +107,6 @@ function formatDmTapMessage(payload: unknown): string | null {
   }
 
   const sender = senderUsername || senderName || senderId || "desconhecido";
-  if (voiceSimpleId != null) {
-    return `[#${voiceSimpleId}] ${sender}: ${text}`;
-  }
   return `${sender}: ${text}`;
 }
 
@@ -107,6 +134,7 @@ function printHelp(): void {
   console.log("  stopDmTap");
   console.log("  getDmTapStats");
   console.log("  resolveVoiceMessage <senderUsername> | <id numerico do audio>");
+  console.log("  resolveImageMessage <senderUsername> | <id numerico da foto>");
   console.log("  mto:<senderUsername>");
   console.log("  closeBrowser");
   console.log("  help");
@@ -123,6 +151,8 @@ function printMessageModeHelp(targetUsername: string): void {
   console.log("  /help   - mostra esta ajuda");
   console.log("  /audio     - link do ultimo audio desta conversa");
   console.log("  /audio <n> - link do audio com id simples (ex: /audio 2)");
+  console.log("  /foto     - link da ultima foto desta conversa");
+  console.log("  /foto <n> - link da foto com id simples (ex: /foto 2)");
   console.log("");
 }
 
@@ -250,6 +280,7 @@ socket.on("dmTap:newMessage", (payload) => {
 
     const formatted = formatDmTapMessage(payload);
     const playbackUrl = String(data?.playbackUrl ?? "").trim();
+    const imageViewUrl = String(data?.imageViewUrl ?? "").trim();
     if (formatted) {
       console.log(`[DM] ${formatted}`);
     }
@@ -260,7 +291,14 @@ socket.on("dmTap:newMessage", (payload) => {
           : null;
       console.log(sid != null ? `[AUDIO #${sid}] ${playbackUrl}` : `[AUDIO] ${playbackUrl}`);
     }
-    if (formatted || playbackUrl) {
+    if (imageViewUrl) {
+      const iid =
+        typeof data?.imageSimpleId === "number" && Number.isFinite(data.imageSimpleId)
+          ? data.imageSimpleId
+          : null;
+      console.log(iid != null ? `[FOTO #${iid}] ${imageViewUrl}` : `[FOTO] ${imageViewUrl}`);
+    }
+    if (formatted || playbackUrl || imageViewUrl) {
       rl.prompt(true);
       return;
     }
@@ -294,6 +332,29 @@ socket.on("resolveVoiceMessage:result", (payload) => {
     return;
   }
   log("resolveVoiceMessage:result", payload);
+});
+
+socket.on("resolveImageMessage:result", (payload) => {
+  const data = toRecord(payload);
+  const ok = Boolean(data?.ok);
+  if (messageModeTarget) {
+    if (!ok) {
+      console.log("[FOTO] Nao foi possivel localizar imagem para este usuario.");
+      rl.prompt(true);
+      return;
+    }
+    const imageViewUrl = String(data?.imageViewUrl || "").trim();
+    if (!imageViewUrl) {
+      console.log("[FOTO] URL da imagem nao disponivel.");
+      rl.prompt(true);
+      return;
+    }
+    const iid = typeof data?.imageSimpleId === "number" ? data.imageSimpleId : null;
+    console.log(iid != null ? `[FOTO #${iid}] ${imageViewUrl}` : `[FOTO] ${imageViewUrl}`);
+    rl.prompt(true);
+    return;
+  }
+  log("resolveImageMessage:result", payload);
 });
 
 const rl = readline.createInterface({
@@ -330,6 +391,18 @@ rl.on("line", (line: string) => {
           socket.emit("resolveVoiceMessage", { voiceSimpleId: Math.floor(n) });
         } else {
           console.log("[AUDIO] id invalido. Exemplo: /audio 2");
+        }
+      }
+    } else if (input === "/foto" || input.startsWith("/foto ")) {
+      const parts = input.split(/\s+/);
+      if (parts.length === 1) {
+        socket.emit("resolveImageMessage", { senderUsername: messageModeTarget });
+      } else {
+        const n = Number(parts[1]);
+        if (Number.isFinite(n) && n > 0) {
+          socket.emit("resolveImageMessage", { imageSimpleId: Math.floor(n) });
+        } else {
+          console.log("[FOTO] id invalido. Exemplo: /foto 2");
         }
       }
     } else {
@@ -480,6 +553,18 @@ rl.on("line", (line: string) => {
     } else {
       log("enviando comando", { command: "resolveVoiceMessage", senderUsername: rest });
       socket.emit("resolveVoiceMessage", { senderUsername: rest });
+    }
+  } else if (command === "resolveImageMessage") {
+    const rest = args.join(" ").trim();
+    if (!rest) {
+      log("uso invalido", { expected: "resolveImageMessage <senderUsername> | <id numerico>" });
+    } else if (/^\d+$/.test(rest)) {
+      const imageSimpleId = Number.parseInt(rest, 10);
+      log("enviando comando", { command: "resolveImageMessage", imageSimpleId });
+      socket.emit("resolveImageMessage", { imageSimpleId });
+    } else {
+      log("enviando comando", { command: "resolveImageMessage", senderUsername: rest });
+      socket.emit("resolveImageMessage", { senderUsername: rest });
     }
   } else if (command === "help") {
     if (messageModeTarget) {

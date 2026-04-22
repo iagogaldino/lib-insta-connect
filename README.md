@@ -150,6 +150,9 @@ Assim que um cliente conecta, recebe o evento `status`:
 | **`startDmTap`** | `{ debug? }` | Liga o interceptador de DMs via MQTT (emite `dmTap:newMessage`) |
 | **`stopDmTap`** | — | Desliga o interceptador |
 | **`getDmTapStats`** | — | Retorna telemetria do parser (frames vistos, payloads JSON, Thrift, erros) |
+| **`openConversation`** | `{ conversationTitle, dedicatedTab?, autoStartDmTap? }` | Abre uma conversa pelo título; com `mto:` o cliente envia aba dedicada e pode ligar o dmTap automaticamente |
+| **`resolveVoiceMessage`** | `{ senderUsername? \| voiceSimpleId? \| messageId? }` | Último áudio do usuário ou link por id simples (proxy `GET /voice/:id`) |
+| **`resolveImageMessage`** | `{ senderUsername? \| imageSimpleId? \| messageId? }` | Última imagem do usuário ou link por id simples (proxy `GET /image/:id`) |
 
 ### Eventos emitidos
 
@@ -174,6 +177,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `newMessage` | Mensagem nova capturada por `startMessageListener` / `startThreadListener` |
 | **`dmTap:newMessage`** | Mensagem decodificada pelo dmTap (MQTT/JSON/Thrift) |
 | **`dmTap:debug`** | Telemetria opcional do parser (apenas quando iniciado com `{ debug: true }`) |
+| **`resolveVoiceMessage:result`** / **`resolveImageMessage:result`** | Resposta com URL de proxy para ouvir/ver mídia |
 
 ---
 
@@ -325,10 +329,19 @@ interface DmTapEvent {
   messageId?: string | null;         // item_id (usado para dedup)
   seqId?: string | null;             // sequence id (quando disponível)
   typename?: string | null;          // tipo do payload (ex. "XDTMessageText")
+  voiceMediaUrl?: string | null;     // URL de áudio no CDN (heurístico)
+  imageMediaUrl?: string | null;     // URL de imagem no CDN (heurístico)
+  // Campos adicionados pelo socket-server (proxy + ids simples):
+  voiceSimpleId?: number | null;
+  playbackUrl?: string | null;
+  imageSimpleId?: number | null;
+  imageViewUrl?: string | null;
   timestamp: string;                 // ISO-8601 do momento de parse
   source: "thrift" | "json";         // decoder que extraiu o dado
 }
 ```
+
+O servidor HTTP do `socket-server` expõe proxies autenticados (cookies do Chromium): `GET /voice/<id>` (áudio) e `GET /image/<id>` (imagem), com `<id>` numérico. Em deploy remoto, defina `PUBLIC_BASE_URL` para que os links retornados ao cliente apontem para o host público.
 
 ### Debug e telemetria
 

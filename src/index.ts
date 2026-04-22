@@ -113,10 +113,15 @@ export interface DmTapEvent {
   seqId?: string | null;
   typename?: string | null;
   voiceMediaUrl?: string | null;
+  imageMediaUrl?: string | null;
   /** Atribuido pelo servidor: ID simples (1, 2, 3) para o proxy de audio. */
   voiceSimpleId?: number | null;
   /** URL do servidor para tocar o audio (proxy autenticado). */
   playbackUrl?: string | null;
+  /** Atribuido pelo servidor: ID simples para o proxy de imagem. */
+  imageSimpleId?: number | null;
+  /** URL do servidor para ver a imagem (proxy autenticado). */
+  imageViewUrl?: string | null;
   timestamp: string;
   source: "thrift" | "json";
 }

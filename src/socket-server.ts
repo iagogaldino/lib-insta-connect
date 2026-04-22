@@ -12,30 +12,44 @@ let nextVoiceSimpleId = 1;
 const igMessageIdToSimpleVoiceId = new Map<string, number>();
 const simpleVoiceIdToIgMessageId = new Map<number, string>();
 
-function resolveVoiceStorageKeyFromRoute(routeSegment: string): string | null {
+const imageMessages = new Map<string, { mediaUrl: string; senderUsername: string | null; createdAt: number }>();
+const latestImageByUser = new Map<string, string>();
+let nextImageSimpleId = 1;
+const igMessageIdToSimpleImageId = new Map<string, number>();
+const simpleImageIdToIgMessageId = new Map<number, string>();
+
+function resolveSimpleIdFromRoute(
+  routeSegment: string,
+  simpleIdToMessageId: Map<number, string>,
+): string | null {
   const trimmed = routeSegment.trim();
   if (/^\d+$/.test(trimmed)) {
     const n = Number.parseInt(trimmed, 10);
-    return simpleVoiceIdToIgMessageId.get(n) || null;
+    return simpleIdToMessageId.get(n) || null;
   }
   return trimmed.length > 0 ? trimmed : null;
 }
 
-async function streamVoiceMessage(
+async function streamProxyMedia(
+  store: Map<string, { mediaUrl: string; senderUsername: string | null; createdAt: number }>,
+  simpleIdToMessageId: Map<number, string>,
   routeKey: string,
+  notFoundError: string,
+  fetchErrorLabel: string,
+  defaultContentType: string,
   writeHead: (statusCode: number, headers?: Record<string, string>) => void,
   end: (chunk?: string | Buffer) => void,
 ): Promise<void> {
-  const messageId = resolveVoiceStorageKeyFromRoute(routeKey);
+  const messageId = resolveSimpleIdFromRoute(routeKey, simpleIdToMessageId);
   if (!messageId) {
     writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    end(JSON.stringify({ ok: false, error: "voice id invalido" }));
+    end(JSON.stringify({ ok: false, error: "id invalido" }));
     return;
   }
-  const record = voiceMessages.get(messageId);
+  const record = store.get(messageId);
   if (!record) {
     writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    end(JSON.stringify({ ok: false, error: "voice message nao encontrada" }));
+    end(JSON.stringify({ ok: false, error: notFoundError }));
     return;
   }
 
@@ -49,14 +63,14 @@ async function streamVoiceMessage(
       end(
         JSON.stringify({
           ok: false,
-          error: `falha ao buscar audio remoto (${response.status})`,
+          error: `${fetchErrorLabel} (${response.status})`,
         }),
       );
       return;
     }
 
     const arrayBuffer = await response.arrayBuffer();
-    const contentType = response.headers.get("content-type") || "audio/mpeg";
+    const contentType = response.headers.get("content-type") || defaultContentType;
     writeHead(200, {
       "content-type": contentType,
       "cache-control": "no-store",
@@ -74,6 +88,40 @@ async function streamVoiceMessage(
   }
 }
 
+async function streamVoiceMessage(
+  routeKey: string,
+  writeHead: (statusCode: number, headers?: Record<string, string>) => void,
+  end: (chunk?: string | Buffer) => void,
+): Promise<void> {
+  return streamProxyMedia(
+    voiceMessages,
+    simpleVoiceIdToIgMessageId,
+    routeKey,
+    "voice message nao encontrada",
+    "falha ao buscar midia remota",
+    "audio/mpeg",
+    writeHead,
+    end,
+  );
+}
+
+async function streamImageMessage(
+  routeKey: string,
+  writeHead: (statusCode: number, headers?: Record<string, string>) => void,
+  end: (chunk?: string | Buffer) => void,
+): Promise<void> {
+  return streamProxyMedia(
+    imageMessages,
+    simpleImageIdToIgMessageId,
+    routeKey,
+    "imagem nao encontrada",
+    "falha ao buscar imagem remota",
+    "image/jpeg",
+    writeHead,
+    end,
+  );
+}
+
 const httpServer = createServer((req, res) => {
   const method = req.method || "GET";
   const url = new URL(req.url || "/", publicBaseUrl);
@@ -81,6 +129,16 @@ const httpServer = createServer((req, res) => {
   if (method === "GET" && url.pathname.startsWith(voicePrefix)) {
     const routeSegment = decodeURIComponent(url.pathname.slice(voicePrefix.length)).trim();
     void streamVoiceMessage(
+      routeSegment,
+      (statusCode, headers) => res.writeHead(statusCode, headers),
+      (chunk) => res.end(chunk),
+    );
+    return;
+  }
+  const imagePrefix = "/image/";
+  if (method === "GET" && url.pathname.startsWith(imagePrefix)) {
+    const routeSegment = decodeURIComponent(url.pathname.slice(imagePrefix.length)).trim();
+    void streamImageMessage(
       routeSegment,
       (statusCode, headers) => res.writeHead(statusCode, headers),
       (chunk) => res.end(chunk),
@@ -127,6 +185,37 @@ function rememberVoiceEvent(evt: DmTapEvent): { voiceSimpleId: number; playbackU
   return { voiceSimpleId, playbackUrl };
 }
 
+function rememberImageEvent(evt: DmTapEvent): { imageSimpleId: number; imageViewUrl: string } | null {
+  if (String(evt.voiceMediaUrl || "").trim()) {
+    return null;
+  }
+  const messageId = String(evt.messageId || "").trim();
+  const mediaUrl = String(evt.imageMediaUrl || "").trim();
+  const senderUsername = String(evt.senderUsername || "").trim().toLowerCase();
+  if (!messageId || !mediaUrl) {
+    return null;
+  }
+
+  let imageSimpleId = igMessageIdToSimpleImageId.get(messageId);
+  if (imageSimpleId === undefined) {
+    imageSimpleId = nextImageSimpleId++;
+    igMessageIdToSimpleImageId.set(messageId, imageSimpleId);
+    simpleImageIdToIgMessageId.set(imageSimpleId, messageId);
+  }
+
+  imageMessages.set(messageId, {
+    mediaUrl,
+    senderUsername: senderUsername || null,
+    createdAt: Date.now(),
+  });
+  if (senderUsername) {
+    latestImageByUser.set(senderUsername, messageId);
+  }
+
+  const imageViewUrl = `${publicBaseUrl}/image/${imageSimpleId}`;
+  return { imageSimpleId, imageViewUrl };
+}
+
 io.on("connection", (socket) => {
   let startListenerPromise: Promise<{ started: boolean; url: string }> | null = null;
   let listenerStarted = false;
@@ -135,12 +224,19 @@ io.on("connection", (socket) => {
     return client.startDmTap(
       (evt) => {
         const voiceMeta = rememberVoiceEvent(evt);
+        const imageMeta = rememberImageEvent(evt);
         const enriched = {
           ...evt,
           ...(voiceMeta
             ? {
                 voiceSimpleId: voiceMeta.voiceSimpleId,
                 playbackUrl: voiceMeta.playbackUrl,
+              }
+            : {}),
+          ...(imageMeta
+            ? {
+                imageSimpleId: imageMeta.imageSimpleId,
+                imageViewUrl: imageMeta.imageViewUrl,
               }
             : {}),
         };
@@ -152,7 +248,9 @@ io.on("connection", (socket) => {
           preview: (evt.text || "").slice(0, 80),
           source: evt.source,
           hasVoice: Boolean(evt.voiceMediaUrl),
+          hasImage: Boolean(evt.imageMediaUrl),
           voiceSimpleId: voiceMeta?.voiceSimpleId,
+          imageSimpleId: imageMeta?.imageSimpleId,
         });
         socket.emit("dmTap:newMessage", enriched);
       },
@@ -330,6 +428,71 @@ io.on("connection", (socket) => {
         voiceSimpleId,
         senderUsername: voice.senderUsername,
         playbackUrl: `${publicBaseUrl}/voice/${playbackPath}`,
+      });
+    },
+  );
+
+  socket.on(
+    "resolveImageMessage",
+    (payload: { senderUsername?: string; messageId?: string; imageSimpleId?: number } | undefined) => {
+      const imageSimpleIdArg =
+        typeof payload?.imageSimpleId === "number" && Number.isFinite(payload.imageSimpleId)
+          ? Math.floor(payload.imageSimpleId)
+          : null;
+      if (imageSimpleIdArg !== null) {
+        const messageId = simpleImageIdToIgMessageId.get(imageSimpleIdArg);
+        if (!messageId) {
+          socket.emit("resolveImageMessage:result", {
+            ok: false,
+            error: "imagem nao encontrada para esse id",
+          });
+          return;
+        }
+        const image = imageMessages.get(messageId);
+        if (!image) {
+          socket.emit("resolveImageMessage:result", {
+            ok: false,
+            error: "imagem expirada ou inexistente",
+          });
+          return;
+        }
+        socket.emit("resolveImageMessage:result", {
+          ok: true,
+          messageId,
+          imageSimpleId: imageSimpleIdArg,
+          senderUsername: image.senderUsername,
+          imageViewUrl: `${publicBaseUrl}/image/${imageSimpleIdArg}`,
+        });
+        return;
+      }
+
+      const senderUsername = String(payload?.senderUsername || "").trim().toLowerCase();
+      const explicitMessageId = String(payload?.messageId || "").trim();
+      const messageId =
+        explicitMessageId || (senderUsername ? latestImageByUser.get(senderUsername) || "" : "");
+      if (!messageId) {
+        socket.emit("resolveImageMessage:result", {
+          ok: false,
+          error: "nenhuma imagem encontrada para esse usuario",
+        });
+        return;
+      }
+      const image = imageMessages.get(messageId);
+      if (!image) {
+        socket.emit("resolveImageMessage:result", {
+          ok: false,
+          error: "imagem expirada ou inexistente",
+        });
+        return;
+      }
+      const imageSimpleId = igMessageIdToSimpleImageId.get(messageId) ?? null;
+      const viewPath = imageSimpleId != null ? String(imageSimpleId) : encodeURIComponent(messageId);
+      socket.emit("resolveImageMessage:result", {
+        ok: true,
+        messageId,
+        imageSimpleId,
+        senderUsername: image.senderUsername,
+        imageViewUrl: `${publicBaseUrl}/image/${viewPath}`,
       });
     },
   );

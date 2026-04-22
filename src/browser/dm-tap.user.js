@@ -595,7 +595,9 @@
             for (var hi = 0; hi < heurs.length; hi++) {
               var heur = heurs[hi];
               if (!heur) continue;
-              if (!heur.text && !heur.senderId && !heur.messageId) continue;
+              if (!heur.text && !heur.senderId && !heur.messageId && !heur.voiceMediaUrl && !heur.imageMediaUrl) {
+                continue;
+              }
               if (heur.messageId && alreadySeen(heur.messageId)) {
                 dbg("skip-dup", { topic: pkt.topic, messageId: heur.messageId });
                 continue;
@@ -612,6 +614,8 @@
                 messageId: heur.messageId,
                 seqId: heur.seqId,
                 typename: heur.typename,
+                voiceMediaUrl: heur.voiceMediaUrl,
+                imageMediaUrl: heur.imageMediaUrl,
                 raw: obj,
                 source: "json",
               });
@@ -719,6 +723,110 @@
       return null;
     }
 
+    function pickVoiceMediaUrl(n) {
+      function isAudioUrl(value) {
+        if (!value || typeof value !== "string") return false;
+        var v = value.toLowerCase();
+        return (
+          /^https?:\/\//.test(v) &&
+          (v.includes(".m4a") || v.includes(".aac") || v.includes(".mp3") || v.includes("audio"))
+        );
+      }
+      function walkVoice(node) {
+        if (!node || typeof node !== "object") return null;
+        if (Array.isArray(node)) {
+          for (var i = 0; i < node.length; i++) {
+            var fromArray = walkVoice(node[i]);
+            if (fromArray) return fromArray;
+          }
+          return null;
+        }
+        for (var k in node) {
+          if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+          var v = node[k];
+          var lk = String(k).toLowerCase();
+          if (typeof v === "string") {
+            if (isAudioUrl(v) && (lk.includes("audio") || lk.includes("voice") || lk.includes("url"))) {
+              return v;
+            }
+          } else if (v && typeof v === "object") {
+            var nested = walkVoice(v);
+            if (nested) return nested;
+          }
+        }
+        return null;
+      }
+      return walkVoice(n);
+    }
+
+    function pickImageMediaUrl(n) {
+      function isAudioUrl(value) {
+        if (!value || typeof value !== "string") return false;
+        var v = value.toLowerCase();
+        return (
+          /^https?:\/\//.test(v) &&
+          (v.includes(".m4a") || v.includes(".aac") || v.includes(".mp3") || v.includes("/audio") || v.includes("audio%"))
+        );
+      }
+      function isImageUrl(value) {
+        if (!value || typeof value !== "string") return false;
+        if (!/^https?:\/\//i.test(value) || isAudioUrl(value)) return false;
+        var v = value.toLowerCase();
+        if (
+          v.includes(".jpg") || v.includes(".jpeg") || v.includes(".png") || v.includes(".webp") || v.includes(".heic")
+        ) {
+          return true;
+        }
+        if (v.includes("image") && (v.includes("fbcdn") || v.includes("cdninstagram") || v.includes("instagram"))) {
+          return true;
+        }
+        if (v.includes("scontent-") && (v.includes("jpg") || v.includes("oe=") || v.includes("ig_cache_key"))) {
+          return true;
+        }
+        if (
+          (v.includes("fbcdn") || v.includes("cdninstagram")) &&
+          (v.includes("m1080x1080") || v.includes("m640x") || v.includes("e35") || v.includes("e15"))
+        ) {
+          return true;
+        }
+        return false;
+      }
+      function walkImg(node) {
+        if (!node || typeof node !== "object") return null;
+        if (Array.isArray(node)) {
+          for (var j = 0; j < node.length; j++) {
+            var fromA = walkImg(node[j]);
+            if (fromA) return fromA;
+          }
+          return null;
+        }
+        for (var k in node) {
+          if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+          var v = node[k];
+          var lk = String(k).toLowerCase();
+          if (typeof v === "string" && isImageUrl(v)) {
+            if (
+              lk.includes("url") ||
+              lk.includes("uri") ||
+              lk.includes("image") ||
+              lk.includes("media") ||
+              lk.includes("display") ||
+              lk.includes("preview") ||
+              lk.includes("src") ||
+              lk.includes("thumbnail")
+            ) {
+              return v;
+            }
+          } else if (v && typeof v === "object") {
+            var nestedI = walkImg(v);
+            if (nestedI) return nestedI;
+          }
+        }
+        return null;
+      }
+      return walkImg(n);
+    }
+
     function pickSenderDetails(n) {
       // Instagram aninha em .sender / .sender.user_dict
       if (n.sender && typeof n.sender === "object") {
@@ -755,6 +863,11 @@
         }
         var mid = n.message_id || n.mid || (n.message && (n.message.message_id || n.message.mid)) || null;
         var seq = n.uq_seq_id || n.seq_id || (n.message && (n.message.uq_seq_id || n.message.seq_id)) || null;
+        var voiceMediaUrl = pickVoiceMediaUrl(n) || (n.message ? pickVoiceMediaUrl(n.message) : null);
+        var imageMediaUrl = pickImageMediaUrl(n) || (n.message ? pickImageMediaUrl(n.message) : null);
+        if (imageMediaUrl && voiceMediaUrl) {
+          imageMediaUrl = null;
+        }
         // deduplica por messageId para evitar hits duplicados (outer + inner .message)
         var dedupKey = mid || seq || null;
         if (dedupKey && seenIds[dedupKey]) {
@@ -767,6 +880,8 @@
             prev.senderName = details.name;
             prev.senderUsername = details.username;
           }
+          if (!prev.voiceMediaUrl && voiceMediaUrl) prev.voiceMediaUrl = String(voiceMediaUrl);
+          if (!prev.imageMediaUrl && imageMediaUrl) prev.imageMediaUrl = String(imageMediaUrl);
         } else {
           var entry = {
             senderId: sender ? String(sender) : null,
@@ -777,6 +892,8 @@
             seqId: seq ? String(seq) : null,
             senderName: details ? details.name : null,
             senderUsername: details ? details.username : null,
+            voiceMediaUrl: voiceMediaUrl ? String(voiceMediaUrl) : null,
+            imageMediaUrl: imageMediaUrl ? String(imageMediaUrl) : null,
           };
           results.push(entry);
           if (dedupKey) seenIds[dedupKey] = entry;
@@ -836,6 +953,8 @@
       messageId: s(raw.messageId),
       seqId: s(raw.seqId),
       typename: raw.typename ? String(raw.typename) : null,
+      voiceMediaUrl: raw.voiceMediaUrl ? String(raw.voiceMediaUrl) : null,
+      imageMediaUrl: raw.imageMediaUrl ? String(raw.imageMediaUrl) : null,
       timestamp: raw.timestamp || new Date().toISOString(),
       source: raw.source === "thrift" ? "thrift" : "json",
     };
