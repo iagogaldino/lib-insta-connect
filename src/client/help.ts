@@ -4,6 +4,7 @@ export function printHelp(): void {
   console.log("  openLogin");
   console.log("  login <username> <password>");
   console.log("  listConversations [limit]");
+  console.log("  searchUsers <query> [limit]");
   console.log("  listConversationsIntercept [timeoutMs]");
   console.log("  debugInboxTraffic [timeoutMs]");
   console.log("  debugMessageTransport [timeoutMs]");

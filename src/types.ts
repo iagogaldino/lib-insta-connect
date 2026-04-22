@@ -98,6 +98,14 @@ export interface IncomingMessageEvent {
   timestamp: string | null;
 }
 
+/** Resultado de linha de busca de perfil (contas) no Instagram Web. */
+export interface InstagramSearchUser {
+  username: string;
+  fullName: string;
+  href: string;
+  isVerified?: boolean;
+}
+
 export interface DmTapEvent {
   url: string;
   topic: string;

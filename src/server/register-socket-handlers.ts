@@ -212,6 +212,43 @@ export function registerSocketServer(
   });
 
   socket.on(
+    "searchUsers",
+    async (payload: { query?: string; limit?: number } | undefined) => {
+      const query = String(payload?.query || "").trim();
+      const limit = Number(payload?.limit);
+      log("searchUsers command received", { socketId: socket.id, query, limit: payload?.limit });
+      try {
+        if (!query) {
+          throw new Error("query e obrigatorio.");
+        }
+        const result = await client.searchUsers(query, {
+          limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        });
+        log("searchUsers command completed", {
+          socketId: socket.id,
+          ok: true,
+          count: result.users.length,
+          source: result.source,
+        });
+        socket.emit("searchUsers:result", {
+          ok: true,
+          ...result,
+        });
+      } catch (error) {
+        log("searchUsers command failed", {
+          socketId: socket.id,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        socket.emit("searchUsers:result", {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+
+  socket.on(
     "listConversationsIntercept",
     async (payload: { timeoutMs?: number } | undefined) => {
       const timeoutMs = Number(payload?.timeoutMs || 25000);

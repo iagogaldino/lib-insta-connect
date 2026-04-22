@@ -91,6 +91,25 @@ socket.on("listConversations:result", (payload) => {
   log("listConversations:result", payload);
 });
 
+socket.on("searchUsers:result", (payload) => {
+  const data = toRecord(payload);
+  if (data && data.ok) {
+    const users = data.users;
+    if (Array.isArray(users) && users.length > 0) {
+      for (const u of users) {
+        const o = toRecord(u);
+        if (!o) continue;
+        const un = String(o.username ?? "");
+        const fn = String(o.fullName ?? "").trim();
+        const href = String(o.href ?? "");
+        const v = o.isVerified ? " [v]" : "";
+        console.log(`  @${un}${v}${fn ? ` | ${fn}` : ""} ${href}`);
+      }
+    }
+  }
+  log("searchUsers:result", payload);
+});
+
 socket.on("listConversationsIntercept:result", (payload) => {
   log("listConversationsIntercept:result", payload);
 });
@@ -336,6 +355,26 @@ rl.on("line", (line: string) => {
     const limit = args[0] ? Number(args[0]) : 20;
     log("enviando comando", { command: "listConversations", limit });
     socket.emit("listConversations", { limit });
+  } else if (command === "searchUsers") {
+    if (args.length < 1) {
+      log("uso invalido", { expected: "searchUsers <query> [limite de resultados]" });
+    } else {
+      const last = args[args.length - 1];
+      const lastNum = Number(last);
+      let limit: number | undefined;
+      let queryParts = args;
+      if (args.length >= 2 && Number.isFinite(lastNum) && lastNum > 0) {
+        limit = Math.floor(lastNum);
+        queryParts = args.slice(0, -1);
+      }
+      const query = queryParts.join(" ").trim();
+      if (!query) {
+        log("uso invalido", { expected: "searchUsers <query> [limit]" });
+      } else {
+        log("enviando comando", { command: "searchUsers", query, limit: limit ?? "default" });
+        socket.emit("searchUsers", { query, limit });
+      }
+    }
   } else if (command === "listConversationsIntercept") {
     const timeoutMs = args[0] ? Number(args[0]) : 25000;
     log("enviando comando", { command: "listConversationsIntercept", timeoutMs });

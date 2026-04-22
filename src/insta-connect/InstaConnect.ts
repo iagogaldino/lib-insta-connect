@@ -6,11 +6,14 @@ import { parseBooleanEnv } from "../lib/env";
 import { parseMessagesFromPayload } from "../lib/parse-messages-from-payload";
 import { sleep } from "../lib/sleep";
 import { decodeWebsocketPayload, isMessageTransportUrl } from "../lib/websocket-payload";
+import { collectUsersFromSearchJson } from "../lib/instagram-search-json";
+import type { HTTPResponse } from "puppeteer";
 import type {
   ConversationSummary,
   DmTapEvent,
   IncomingMessageEvent,
   InstaConnectOptions,
+  InstagramSearchUser,
   InterceptedConversation,
   InstagramSocketFrameRecord,
   InstagramSocketProbeResult,
@@ -363,6 +366,416 @@ export class InstaConnect {
     }, limit);
 
     return conversations;
+  }
+
+  /** Indica se ja existe input de busca usavel (painel aberto). */
+  private async isSearchInputVisibleNow(page: Page): Promise<boolean> {
+    return page.evaluate(() => {
+      for (const el of document.querySelectorAll("input")) {
+        if (!(el instanceof HTMLInputElement)) continue;
+        if (el.offsetParent === null) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 28 || r.height < 4) continue;
+        const hint = (el.placeholder + (el.getAttribute("aria-label") || "")).toLowerCase();
+        if (/(search|pesquisar|buscar|procurar)/.test(hint)) return true;
+      }
+      for (const el of document.querySelectorAll("input")) {
+        if (!(el instanceof HTMLInputElement)) continue;
+        if (el.offsetParent === null) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width >= 100 && r.top < 480) return true;
+      }
+      return false;
+    });
+  }
+
+  /**
+   * Abre o painel de busca: tenta varias estrategias (o id mount_* muda; nao depender so de um xpath).
+   * Ordem: ja visivel -> aria -> SVG -> nav -> tecla / -> xpath fixo.
+   */
+  private async openSearchPanelBestEffort(page: Page): Promise<void> {
+    if (await this.isSearchInputVisibleNow(page)) {
+      return;
+    }
+
+    const afterClick = async (): Promise<void> => {
+      await sleep(800);
+    };
+
+    const trySelectors = [
+      'a[aria-label="Search" i]',
+      'a[aria-label^="Search" i]',
+      'a[aria-label="Pesquisar" i]',
+      'a[aria-label^="Pesquisar" i]',
+      '[role="link"][aria-label*="Search" i]',
+      '[role="link"][aria-label*="Pesquisar" i]',
+      'div[role="button"][aria-label*="Search" i]',
+      'div[role="button"][aria-label*="Pesquisar" i]',
+    ];
+    for (const sel of trySelectors) {
+      const h = await page.$(sel);
+      if (h) {
+        await h.click().catch(() => null);
+        await afterClick();
+        if (await this.isSearchInputVisibleNow(page)) return;
+      }
+    }
+
+    const svgClick = await page.evaluate(() => {
+      for (const svg of document.querySelectorAll("svg[aria-label]")) {
+        const al = (svg.getAttribute("aria-label") || "").toLowerCase();
+        if (!/search|pesquisar|buscar|explore|explorar|pesquisa/.test(al)) continue;
+        const el = svg.closest("a, button, [role='button'], [role='link']");
+        if (el instanceof HTMLElement) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    if (svgClick) {
+      await afterClick();
+      if (await this.isSearchInputVisibleNow(page)) return;
+    }
+
+    const navClick = await page.evaluate(() => {
+      const roots: Element[] = [];
+      for (const sel of ["nav", 'aside[role="presentation"]', "aside"]) {
+        const n = document.querySelector(sel);
+        if (n) roots.push(n);
+      }
+      for (const root of roots) {
+        for (const el of root.querySelectorAll("a, [role='link'], [role='button']")) {
+          if (!(el instanceof HTMLElement)) continue;
+          const label = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+          if (
+            label === "search" ||
+            label === "pesquisar" ||
+            label.startsWith("search") ||
+            label.startsWith("pesquisar") ||
+            /^(buscar|procurar)$/.test(label)
+          ) {
+            el.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+    if (navClick) {
+      await sleep(1000);
+      if (await this.isSearchInputVisibleNow(page)) return;
+    }
+
+    try {
+      await page.keyboard.press("/");
+      await sleep(600);
+      if (await this.isSearchInputVisibleNow(page)) return;
+    } catch {
+      // ignorar
+    }
+
+    const xpathLast =
+      '//*[@id="mount_0_0_+6"]/div/div/div[2]/div/div/div[1]/div[1]/div[1]/div/div/div/div/div/div[2]/div/div[4]/span/div/a';
+    const xpathClick = await page.evaluate((xp: string) => {
+      const r = document.evaluate(
+        xp,
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null,
+      );
+      const n = r.singleNodeValue;
+      if (n instanceof HTMLElement) {
+        n.click();
+        return true;
+      }
+      return false;
+    }, xpathLast);
+    if (xpathClick) {
+      await sleep(1500);
+    }
+  }
+
+  private async waitForSearchInputReady(page: Page, timeoutMs: number): Promise<void> {
+    await page.waitForFunction(
+      () => {
+        for (const el of document.querySelectorAll("input")) {
+          if (!(el instanceof HTMLInputElement)) continue;
+          if (el.offsetParent === null) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 28 || r.height < 4) continue;
+          const hint = (el.placeholder + (el.getAttribute("aria-label") || "")).toLowerCase();
+          if (/(search|pesquisar|buscar|procurar)/.test(hint)) return true;
+        }
+        for (const el of document.querySelectorAll("input")) {
+          if (!(el instanceof HTMLInputElement)) continue;
+          if (el.offsetParent === null) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width >= 100 && r.top < 420) return true;
+        }
+        return false;
+      },
+      { timeout: timeoutMs, polling: 200 },
+    );
+  }
+
+  /** Define valor do input e dispara eventos para frameworks (React) perceberem. */
+  private async setSearchInputValueAndDispatch(page: Page, text: string): Promise<void> {
+    const ok = await page.evaluate((q: string) => {
+      const find = (): HTMLInputElement | null => {
+        const scoreHint = (i: HTMLInputElement): number => {
+          const h = (i.placeholder + (i.getAttribute("aria-label") || "")).toLowerCase();
+          if (/(search|pesquisar|buscar|procurar)/.test(h)) return 4;
+          return 0;
+        };
+        let best: HTMLInputElement | null = null;
+        let bestScore = -1;
+        for (const el of document.querySelectorAll("input")) {
+          if (!(el instanceof HTMLInputElement)) continue;
+          if (el.offsetParent === null) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 28 || r.height < 4) continue;
+          if (window.getComputedStyle(el).visibility === "hidden") continue;
+          const sh = scoreHint(el);
+          const wideTop = r.width >= 80 && r.top < 400;
+          const sc = sh + (wideTop ? 2 : 0) + Math.min(r.width, 500) / 1000;
+          if (sc > bestScore) {
+            bestScore = sc;
+            best = el;
+          }
+        }
+        return best;
+      };
+      const input = find();
+      if (!input) return false;
+      input.focus();
+      const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      if (proto?.set) {
+        proto.set.call(input, q);
+      } else {
+        input.value = q;
+      }
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      try {
+        input.dispatchEvent(
+          new InputEvent("input", { bubbles: true, cancelable: true, data: q, inputType: "insertText" }),
+        );
+      } catch {
+        // InputEvent pode nao existir em contextos antigos
+      }
+      input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      return true;
+    }, text);
+    if (!ok) {
+      throw new Error("Campo de busca encontrado no DOM nao pôde ser preenchido.");
+    }
+  }
+
+  /**
+   * Busca de contas no Instagram Web: preenche o campo de busca global (home) e
+   * combina (1) JSON de respostas de rede (fbsearch/typeahead/graphql) e (2) links de perfil no DOM.
+   * Requer sessao autenticada. A interface do Instagram muda; resultados vazios podem exigir ajuste de seletores.
+   */
+  public async searchUsers(
+    query: string,
+    options?: { limit?: number },
+  ): Promise<{
+    query: string;
+    users: InstagramSearchUser[];
+    url: string;
+    source: "network" | "dom" | "mixed";
+  }> {
+    const q = String(query || "").trim();
+    if (!q) {
+      throw new Error("query e obrigatorio.");
+    }
+    const limit = Math.min(Math.max(1, options?.limit ?? 25), 100);
+
+    if (!this.page) {
+      await this.launch();
+    }
+    const page = this.page;
+    if (!page) {
+      throw new Error("Pagina do navegador nao inicializada.");
+    }
+
+    const fromNetwork = new Map<string, InstagramSearchUser>();
+    const fromDom = new Map<string, InstagramSearchUser>();
+
+    const onResponse = async (res: HTTPResponse): Promise<void> => {
+      if (fromNetwork.size >= limit) return;
+      try {
+        const url = res.url();
+        if (!/instagram\.com/i.test(url)) return;
+        if (!/(fbsearch|typeahead|graphql|search|api\/v1)/i.test(url)) return;
+        const ct = res.headers()["content-type"] || "";
+        if (!ct.includes("json") && !ct.includes("javascript")) return;
+        const text = await res.text().catch(() => "");
+        if (!text || (text[0] !== "{" && text[0] !== "[")) return;
+        const data = JSON.parse(text) as unknown;
+        const before = fromNetwork.size;
+        collectUsersFromSearchJson(data, fromNetwork, limit);
+        if (fromNetwork.size > before) {
+          // sucesso
+        }
+      } catch {
+        // resposta nao-JSON ou truncada
+      }
+    };
+
+    page.on("response", onResponse);
+    try {
+      await page.goto("https://www.instagram.com/", { waitUntil: "networkidle2" });
+      await this.handlePostLoginPrompts();
+      if (page.url().includes("/accounts/login")) {
+        throw new Error("Sessao nao autenticada. Faca login antes de buscar.");
+      }
+
+      await this.openSearchPanelBestEffort(page);
+
+      try {
+        await this.waitForSearchInputReady(page, 45000);
+      } catch {
+        throw new Error(
+          "Campo de busca nao apareceu a tempo. O Instagram pode ter mudado a UI: abra o Instagram no navegador, inspecione o icone PESQUISAR na barra lateral e envie o seletor atualizado, ou tente fazer login de novo na sessao.",
+        );
+      }
+
+      await this.setSearchInputValueAndDispatch(page, q);
+      await sleep(3000);
+      await this.handlePostLoginPrompts().catch(() => null);
+
+      const domList = await page.evaluate((max) => {
+        const RESERVED = new Set([
+          "explore",
+          "accounts",
+          "account",
+          "direct",
+          "reels",
+          "reel",
+          "stories",
+          "p",
+          "tv",
+          "legal",
+          "about",
+          "support",
+          "help",
+          "press",
+          "api",
+          "saved",
+          "locations",
+          "location",
+          "your_activity",
+        ]);
+
+        const isProfilePath = (pathname: string): string | null => {
+          const p = pathname.replace(/\/$/, "");
+          const m = p.match(/^\/([a-z0-9._]+)$/i);
+          if (!m) return null;
+          const u = m[1].toLowerCase();
+          if (RESERVED.has(u)) return null;
+          if (u.length < 1 || u.length > 64) return null;
+          return m[1];
+        };
+
+        const candidates: InstagramSearchUser[] = [];
+        const seen = new Set<string>();
+
+        const tryAdd = (a: HTMLAnchorElement): void => {
+          if (candidates.length >= max) return;
+          const href = a.getAttribute("href") || "";
+          if (!href) return;
+          let u: URL;
+          try {
+            u = new URL(href, "https://www.instagram.com");
+          } catch {
+            return;
+          }
+          if (!/instagram\.com$/i.test(u.hostname.replace(/^www\./, ""))) return;
+          const uname = isProfilePath(u.pathname);
+          if (!uname) return;
+          const key = uname.toLowerCase();
+          if (seen.has(key)) return;
+          const r = a.getBoundingClientRect();
+          if (r.width < 2 || r.height < 2) return;
+          seen.add(key);
+          const t = (a.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim();
+          const lines = t
+            .split("\n")
+            .map((x) => x.trim())
+            .filter(Boolean);
+          const fullName = lines[0] && !lines[0].startsWith("@") && lines[0] !== uname ? lines[0] : lines[1] || "";
+          candidates.push({
+            username: uname,
+            fullName: fullName || "",
+            href: `https://www.instagram.com/${uname}/`,
+            isVerified: Boolean(a.querySelector('svg[aria-label*="Verif"], [data-testid="verified-badge"]')),
+          });
+        };
+
+        for (const sel of [
+          '[role="listbox"] a[href]',
+          '[role="list"] a[href]',
+          "div[role='dialog'] a[href]",
+          "main a[href]",
+        ]) {
+          for (const el of document.querySelectorAll<HTMLAnchorElement>(sel)) {
+            tryAdd(el);
+            if (candidates.length >= max) return candidates;
+          }
+        }
+        for (const a of document.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+          tryAdd(a);
+          if (candidates.length >= max) return candidates;
+        }
+        return candidates;
+      }, limit);
+
+      for (const u of domList) {
+        if (!fromDom.has(u.username.toLowerCase())) {
+          fromDom.set(u.username.toLowerCase(), u);
+        }
+      }
+    } finally {
+      page.off("response", onResponse);
+    }
+
+    const merged = new Map<string, InstagramSearchUser>();
+    for (const [k, u] of fromNetwork) {
+      const dom = fromDom.get(k);
+      if (dom) {
+        merged.set(k, {
+          ...dom,
+          fullName: u.fullName || dom.fullName,
+          isVerified: u.isVerified ?? dom.isVerified,
+        });
+      } else {
+        merged.set(k, u);
+      }
+    }
+    for (const [k, u] of fromDom) {
+      if (!merged.has(k)) {
+        merged.set(k, u);
+      }
+    }
+
+    const users = Array.from(merged.values()).slice(0, limit);
+    let source: "network" | "dom" | "mixed" = "dom";
+    if (fromNetwork.size > 0 && fromDom.size > 0) {
+      source = "mixed";
+    } else if (fromNetwork.size > 0) {
+      source = "network";
+    }
+
+    return {
+      query: q,
+      users,
+      url: page.url(),
+      source,
+    };
   }
 
   public async listConversationsByNetworkIntercept(
