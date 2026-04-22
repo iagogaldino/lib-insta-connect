@@ -1875,6 +1875,10 @@ export class InstaConnect {
     return { stopped: true };
   }
 
+  public isDmTapActive(): boolean {
+    return this.dmTapActive;
+  }
+
   public async getDmTapStats(): Promise<Record<string, unknown>> {
     const page = this.dmTapPage;
     if (!page || page.isClosed()) {

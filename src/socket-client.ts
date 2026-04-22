@@ -352,7 +352,11 @@ rl.on("line", (line: string) => {
         conversationTitle: targetUsername,
         dedicatedTab: true,
       });
-      socket.emit("openConversation", { conversationTitle: targetUsername, dedicatedTab: true });
+      socket.emit("openConversation", {
+        conversationTitle: targetUsername,
+        dedicatedTab: true,
+        autoStartDmTap: true,
+      });
       printMessageModeHelp(targetUsername);
     }
   } else if (command === "openLogin") {

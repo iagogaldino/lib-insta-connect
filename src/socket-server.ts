@@ -131,6 +131,70 @@ io.on("connection", (socket) => {
   let startListenerPromise: Promise<{ started: boolean; url: string }> | null = null;
   let listenerStarted = false;
 
+  const executeStartDmTap = async (debugEnabled: boolean) => {
+    return client.startDmTap(
+      (evt) => {
+        const voiceMeta = rememberVoiceEvent(evt);
+        const enriched = {
+          ...evt,
+          ...(voiceMeta
+            ? {
+                voiceSimpleId: voiceMeta.voiceSimpleId,
+                playbackUrl: voiceMeta.playbackUrl,
+              }
+            : {}),
+        };
+        log("dmTap newMessage event", {
+          socketId: socket.id,
+          topic: evt.topic,
+          senderId: evt.senderId,
+          threadId: evt.threadId,
+          preview: (evt.text || "").slice(0, 80),
+          source: evt.source,
+          hasVoice: Boolean(evt.voiceMediaUrl),
+          voiceSimpleId: voiceMeta?.voiceSimpleId,
+        });
+        socket.emit("dmTap:newMessage", enriched);
+      },
+      debugEnabled
+        ? (msg) => {
+            log("dmTap debug", { socketId: socket.id, kind: msg.kind, data: msg.data });
+            socket.emit("dmTap:debug", msg);
+          }
+        : undefined,
+    );
+  };
+
+  const ensureDmTapIfIdle = async (debugEnabled: boolean, reason: string): Promise<void> => {
+    if (client.isDmTapActive()) {
+      return;
+    }
+    log("startDmTap auto (antes de outro comando)", { socketId: socket.id, reason, debug: debugEnabled });
+    try {
+      const result = await executeStartDmTap(debugEnabled);
+      log("startDmTap auto completed", { socketId: socket.id, ok: true, url: result.url, reason });
+      socket.emit("startDmTap:result", {
+        ok: true,
+        ...result,
+        auto: true,
+        reason,
+      });
+    } catch (error) {
+      log("startDmTap auto failed", {
+        socketId: socket.id,
+        ok: false,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      socket.emit("startDmTap:result", {
+        ok: false,
+        auto: true,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   log("client connected", { socketId: socket.id });
   socket.emit("status", { message: "connected", socketId: socket.id });
 
@@ -496,17 +560,22 @@ io.on("connection", (socket) => {
 
   socket.on(
     "openConversation",
-    async (payload: { conversationTitle?: string; dedicatedTab?: boolean } | undefined) => {
+    async (payload: { conversationTitle?: string; dedicatedTab?: boolean; autoStartDmTap?: boolean } | undefined) => {
       const conversationTitle = String(payload?.conversationTitle || "").trim();
       const dedicatedTab = Boolean(payload?.dedicatedTab);
+      const autoStartDmTap = Boolean(payload?.autoStartDmTap);
       log("openConversation command received", {
         socketId: socket.id,
         conversationTitle,
         dedicatedTab,
+        autoStartDmTap,
       });
       try {
         if (!conversationTitle) {
           throw new Error("conversationTitle e obrigatorio.");
+        }
+        if (autoStartDmTap) {
+          await ensureDmTapIfIdle(false, "openConversation(mto)");
         }
         const result = await client.openConversationByTitle(conversationTitle, { dedicatedTab });
         log("openConversation command completed", {
@@ -744,39 +813,7 @@ io.on("connection", (socket) => {
     const debugEnabled = Boolean(opts && opts.debug);
     log("startDmTap command received", { socketId: socket.id, debug: debugEnabled });
     try {
-      const result = await client.startDmTap(
-        (evt) => {
-          const voiceMeta = rememberVoiceEvent(evt);
-          const enriched = {
-            ...evt,
-            ...(voiceMeta
-              ? {
-                  voiceSimpleId: voiceMeta.voiceSimpleId,
-                  playbackUrl: voiceMeta.playbackUrl,
-                }
-              : {}),
-          };
-          log("dmTap newMessage event", {
-            socketId: socket.id,
-            topic: evt.topic,
-            senderId: evt.senderId,
-            threadId: evt.threadId,
-            preview: (evt.text || "").slice(0, 80),
-            source: evt.source,
-            hasVoice: Boolean(evt.voiceMediaUrl),
-            voiceSimpleId: voiceMeta?.voiceSimpleId,
-          });
-          socket.emit("dmTap:newMessage", enriched);
-        },
-        // So instalamos callback de debug se o cliente pediu; caso contrario,
-        // o IIFE no browser roda em modo silencioso (sem flood de telemetria).
-        debugEnabled
-          ? (msg) => {
-              log("dmTap debug", { socketId: socket.id, kind: msg.kind, data: msg.data });
-              socket.emit("dmTap:debug", msg);
-            }
-          : undefined,
-      );
+      const result = await executeStartDmTap(debugEnabled);
       log("startDmTap command completed", {
         socketId: socket.id,
         ok: true,
