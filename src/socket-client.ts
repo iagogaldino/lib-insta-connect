@@ -131,6 +131,43 @@ socket.on("probeInstagramRealtime:result", (payload) => {
 });
 
 socket.on("openConversation:result", (payload) => {
+  if (messageModeTarget) {
+    const data = toRecord(payload);
+    const ok = data?.ok === true;
+    if (!ok) {
+      console.log(
+        `[mto] Falha ao abrir conversa: ${String(data?.error ?? "erro desconhecido")}`,
+      );
+    } else {
+      const err = String(data?.messagesLoadError ?? "").trim();
+      if (err) {
+        console.log(`[mto] Historico nao carregado: ${err}`);
+      } else {
+        const raw = data?.messages;
+        const messages = Array.isArray(raw) ? raw : [];
+        const count =
+          typeof data?.messageCount === "number" && Number.isFinite(data.messageCount)
+            ? data.messageCount
+            : messages.length;
+        if (messages.length > 0) {
+          console.log(`[mto] Historico carregado (${count} msg):`);
+          for (const m of messages) {
+            const row = toRecord(m);
+            const text = String(row?.text ?? "");
+            const sender = String(row?.sender ?? "other");
+            const who = sender === "me" ? "voce" : "outro";
+            const ts = String(row?.timestamp ?? "").trim();
+            const line = ts ? `  [${who}] [${ts}] ${text}` : `  [${who}] ${text}`;
+            console.log(line);
+          }
+        } else {
+          console.log("[mto] Conversa aberta. (nenhum historico retornado ainda)");
+        }
+      }
+    }
+    rl.prompt(true);
+    return;
+  }
   log("openConversation:result", payload);
 });
 
@@ -333,6 +370,7 @@ rl.on("line", (line: string) => {
         conversationTitle: targetUsername,
         dedicatedTab: true,
         autoStartDmTap: true,
+        preloadMessages: true,
       });
       printMessageModeHelp(targetUsername);
     }

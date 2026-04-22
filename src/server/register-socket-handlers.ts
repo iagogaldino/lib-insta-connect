@@ -1,6 +1,12 @@
 ﻿import type { Server } from "socket.io";
 import type { InstaConnect } from "../insta-connect/InstaConnect";
 import type { MediaProxy } from "./media-proxy";
+import type { OpenConversationResult } from "../types";
+
+function extractThreadIdFromDirectUrl(url: string): string | null {
+  const m = url.match(/\/direct\/t\/([^/?#]+)/i);
+  return m?.[1] ?? null;
+}
 
 export function registerSocketServer(
   io: Server,
@@ -427,15 +433,26 @@ export function registerSocketServer(
 
   socket.on(
     "openConversation",
-    async (payload: { conversationTitle?: string; dedicatedTab?: boolean; autoStartDmTap?: boolean } | undefined) => {
+    async (
+      payload:
+        | {
+            conversationTitle?: string;
+            dedicatedTab?: boolean;
+            autoStartDmTap?: boolean;
+            preloadMessages?: boolean;
+          }
+        | undefined,
+    ) => {
       const conversationTitle = String(payload?.conversationTitle || "").trim();
       const dedicatedTab = Boolean(payload?.dedicatedTab);
       const autoStartDmTap = Boolean(payload?.autoStartDmTap);
+      const preloadMessages = Boolean(payload?.preloadMessages);
       log("openConversation command received", {
         socketId: socket.id,
         conversationTitle,
         dedicatedTab,
         autoStartDmTap,
+        preloadMessages,
       });
       try {
         if (!conversationTitle) {
@@ -445,16 +462,44 @@ export function registerSocketServer(
           await ensureDmTapIfIdle(false, "openConversation(mto)");
         }
         const result = await client.openConversationByTitle(conversationTitle, { dedicatedTab });
+        let messagesPayload: Pick<
+          OpenConversationResult,
+          "threadId" | "messageCount" | "messages" | "messagesLoadError"
+        > = {};
+        if (preloadMessages) {
+          const threadId = extractThreadIdFromDirectUrl(result.url);
+          if (threadId) {
+            try {
+              const lm = await client.listMessagesByThreadId(threadId, 30);
+              messagesPayload = {
+                threadId: lm.threadId,
+                messageCount: lm.count,
+                messages: lm.messages,
+              };
+            } catch (e) {
+              messagesPayload = {
+                messagesLoadError: e instanceof Error ? e.message : String(e),
+              };
+            }
+          } else {
+            messagesPayload = {
+              messagesLoadError: "Nao foi possivel obter o threadId a partir da URL da conversa.",
+            };
+          }
+        }
         log("openConversation command completed", {
           socketId: socket.id,
           ok: true,
           conversationTitle,
           dedicatedTab,
           url: result.url,
+          preloaded: preloadMessages,
+          messageCount: messagesPayload.messageCount,
         });
         socket.emit("openConversation:result", {
           ok: true,
           ...result,
+          ...messagesPayload,
         });
       } catch (error) {
         log("openConversation command failed", {

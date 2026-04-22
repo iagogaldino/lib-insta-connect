@@ -78,16 +78,21 @@ export interface SendMessageResult {
   url: string;
 }
 
-export interface OpenConversationResult {
-  success: boolean;
-  conversationTitle: string;
-  url: string;
-}
-
 export interface MessageItem {
   text: string;
   sender: "me" | "other";
   timestamp: string | null;
+}
+
+export interface OpenConversationResult {
+  success: boolean;
+  conversationTitle: string;
+  url: string;
+  /** Preenchido quando o cliente pede `preloadMessages` (ex.: `mto:user`). */
+  threadId?: string;
+  messageCount?: number;
+  messages?: MessageItem[];
+  messagesLoadError?: string;
 }
 
 export interface IncomingMessageEvent {
