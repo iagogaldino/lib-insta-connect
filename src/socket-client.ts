@@ -1,6 +1,8 @@
 import "dotenv/config";
 import readline from "node:readline";
 import { io, Socket } from "socket.io-client";
+import { formatDmTapMessage, toRecord } from "./client/dm-tap-format";
+import { printHelp, printMessageModeHelp } from "./client/help";
 
 const serverUrl = process.env.SOCKET_URL || "http://localhost:4010";
 const serverConnectionInfo = parseServerConnectionInfo(serverUrl);
@@ -37,123 +39,6 @@ function parseServerConnectionInfo(url: string): { host: string; port: string; p
       protocol: "desconhecido",
     };
   }
-}
-
-function toRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function formatDmTapMessage(payload: unknown): string | null {
-  const data = toRecord(payload);
-  if (!data) {
-    return null;
-  }
-
-  const senderUsername = String(data.senderUsername ?? "").trim();
-  const senderName = String(data.senderName ?? "").trim();
-  const senderId = String(data.senderId ?? "").trim();
-  const text = String(data.text ?? "").trim();
-  const voiceSimpleId =
-    typeof data.voiceSimpleId === "number" && Number.isFinite(data.voiceSimpleId)
-      ? data.voiceSimpleId
-      : null;
-  const imageSimpleId =
-    typeof data.imageSimpleId === "number" && Number.isFinite(data.imageSimpleId)
-      ? data.imageSimpleId
-      : null;
-  const isVoice = Boolean(
-    data.voiceMediaUrl || /voice message/i.test(text) || /mensagem de voz/i.test(text),
-  );
-  const isPhoto = Boolean(
-    data.imageMediaUrl ||
-      /sent a photo|enviou uma foto|sent an image|photo message|foto\./i.test(text),
-  );
-
-  if (isVoice) {
-    if (!text) {
-      const sender = senderUsername || senderName || senderId || "desconhecido";
-      if (voiceSimpleId != null) {
-        return `[#${voiceSimpleId}] ${sender}: (audio)`;
-      }
-      return `${sender}: (audio)`;
-    }
-    const sender = senderUsername || senderName || senderId || "desconhecido";
-    if (voiceSimpleId != null) {
-      return `[#${voiceSimpleId}] ${sender}: ${text}`;
-    }
-    return `${sender}: ${text}`;
-  }
-
-  if (isPhoto) {
-    if (!text) {
-      const sender = senderUsername || senderName || senderId || "desconhecido";
-      if (imageSimpleId != null) {
-        return `[#${imageSimpleId}] ${sender}: (foto)`;
-      }
-      return `${sender}: (foto)`;
-    }
-    const sender = senderUsername || senderName || senderId || "desconhecido";
-    if (imageSimpleId != null) {
-      return `[#${imageSimpleId}] ${sender}: ${text}`;
-    }
-    return `${sender}: ${text}`;
-  }
-
-  if (!text) {
-    return null;
-  }
-
-  const sender = senderUsername || senderName || senderId || "desconhecido";
-  return `${sender}: ${text}`;
-}
-
-function printHelp(): void {
-  console.log("");
-  console.log("Comandos disponiveis:");
-  console.log("  openLogin");
-  console.log("  login <username> <password>");
-  console.log("  listConversations [limit]");
-  console.log("  listConversationsIntercept [timeoutMs]");
-  console.log("  debugInboxTraffic [timeoutMs]");
-  console.log("  debugMessageTransport [timeoutMs]");
-  console.log("  debugMessageTransportOnly [timeoutMs]");
-  console.log("  debugInstagramSocket [timeoutMs]");
-  console.log("  debugInstagramSocketDirect [timeoutMs]");
-  console.log("  probeInstagramRealtime [timeoutMs]");
-  console.log("  openConversation <conversationTitle>");
-  console.log('  sendMessage <conversationTitle> | <text>');
-  console.log("  listMessages <threadId> [limit]");
-  console.log("  startMessageListener");
-  console.log("  stopMessageListener");
-  console.log("  startThreadListener <threadId>");
-  console.log("  stopThreadListener");
-  console.log("  startDmTap [debug]");
-  console.log("  stopDmTap");
-  console.log("  getDmTapStats");
-  console.log("  resolveVoiceMessage <senderUsername> | <id numerico do audio>");
-  console.log("  resolveImageMessage <senderUsername> | <id numerico da foto>");
-  console.log("  mto:<senderUsername>");
-  console.log("  closeBrowser");
-  console.log("  help");
-  console.log("  exit");
-  console.log("");
-}
-
-function printMessageModeHelp(targetUsername: string): void {
-  console.log("");
-  console.log(`Modo conversa com "${targetUsername}" ativo.`);
-  console.log("Digite a mensagem e pressione Enter para enviar.");
-  console.log("Comandos deste modo:");
-  console.log("  /sair   - encerra o modo conversa");
-  console.log("  /help   - mostra esta ajuda");
-  console.log("  /audio     - link do ultimo audio desta conversa");
-  console.log("  /audio <n> - link do audio com id simples (ex: /audio 2)");
-  console.log("  /foto     - link da ultima foto desta conversa");
-  console.log("  /foto <n> - link da foto com id simples (ex: /foto 2)");
-  console.log("");
 }
 
 log("tentando conectar ao servidor", {
