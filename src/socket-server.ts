@@ -1,12 +1,95 @@
 import "dotenv/config";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
-import { InstaConnect } from "./index";
+import { InstaConnect, DmTapEvent } from "./index";
 
 const port = Number(process.env.PORT || 4010);
 const client = new InstaConnect();
+const publicBaseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${port}`;
+const voiceMessages = new Map<string, { mediaUrl: string; senderUsername: string | null; createdAt: number }>();
+const latestVoiceByUser = new Map<string, string>();
+let nextVoiceSimpleId = 1;
+const igMessageIdToSimpleVoiceId = new Map<string, number>();
+const simpleVoiceIdToIgMessageId = new Map<number, string>();
 
-const httpServer = createServer();
+function resolveVoiceStorageKeyFromRoute(routeSegment: string): string | null {
+  const trimmed = routeSegment.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const n = Number.parseInt(trimmed, 10);
+    return simpleVoiceIdToIgMessageId.get(n) || null;
+  }
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function streamVoiceMessage(
+  routeKey: string,
+  writeHead: (statusCode: number, headers?: Record<string, string>) => void,
+  end: (chunk?: string | Buffer) => void,
+): Promise<void> {
+  const messageId = resolveVoiceStorageKeyFromRoute(routeKey);
+  if (!messageId) {
+    writeHead(404, { "content-type": "application/json; charset=utf-8" });
+    end(JSON.stringify({ ok: false, error: "voice id invalido" }));
+    return;
+  }
+  const record = voiceMessages.get(messageId);
+  if (!record) {
+    writeHead(404, { "content-type": "application/json; charset=utf-8" });
+    end(JSON.stringify({ ok: false, error: "voice message nao encontrada" }));
+    return;
+  }
+
+  try {
+    const authHeaders = await client.getInstagramMediaAuthHeaders();
+    const response = await fetch(record.mediaUrl, {
+      headers: authHeaders,
+    });
+    if (!response.ok) {
+      writeHead(response.status, { "content-type": "application/json; charset=utf-8" });
+      end(
+        JSON.stringify({
+          ok: false,
+          error: `falha ao buscar audio remoto (${response.status})`,
+        }),
+      );
+      return;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const contentType = response.headers.get("content-type") || "audio/mpeg";
+    writeHead(200, {
+      "content-type": contentType,
+      "cache-control": "no-store",
+      "content-length": String(arrayBuffer.byteLength),
+    });
+    end(Buffer.from(arrayBuffer));
+  } catch (error) {
+    writeHead(500, { "content-type": "application/json; charset=utf-8" });
+    end(
+      JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+const httpServer = createServer((req, res) => {
+  const method = req.method || "GET";
+  const url = new URL(req.url || "/", publicBaseUrl);
+  const voicePrefix = "/voice/";
+  if (method === "GET" && url.pathname.startsWith(voicePrefix)) {
+    const routeSegment = decodeURIComponent(url.pathname.slice(voicePrefix.length)).trim();
+    void streamVoiceMessage(
+      routeSegment,
+      (statusCode, headers) => res.writeHead(statusCode, headers),
+      (chunk) => res.end(chunk),
+    );
+    return;
+  }
+  res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ ok: false, error: "not found" }));
+});
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
@@ -16,6 +99,32 @@ const io = new Server(httpServer, {
 function log(message: string, meta?: Record<string, unknown>): void {
   const payload = meta ? ` ${JSON.stringify(meta)}` : "";
   console.log(`[${new Date().toISOString()}] [socket-server] ${message}${payload}`);
+}
+
+function rememberVoiceEvent(evt: DmTapEvent): { voiceSimpleId: number; playbackUrl: string } | null {
+  const messageId = String(evt.messageId || "").trim();
+  const mediaUrl = String(evt.voiceMediaUrl || "").trim();
+  const senderUsername = String(evt.senderUsername || "").trim().toLowerCase();
+  if (!messageId || !mediaUrl) return null;
+
+  let voiceSimpleId = igMessageIdToSimpleVoiceId.get(messageId);
+  if (voiceSimpleId === undefined) {
+    voiceSimpleId = nextVoiceSimpleId++;
+    igMessageIdToSimpleVoiceId.set(messageId, voiceSimpleId);
+    simpleVoiceIdToIgMessageId.set(voiceSimpleId, messageId);
+  }
+
+  voiceMessages.set(messageId, {
+    mediaUrl,
+    senderUsername: senderUsername || null,
+    createdAt: Date.now(),
+  });
+  if (senderUsername) {
+    latestVoiceByUser.set(senderUsername, messageId);
+  }
+
+  const playbackUrl = `${publicBaseUrl}/voice/${voiceSimpleId}`;
+  return { voiceSimpleId, playbackUrl };
 }
 
 io.on("connection", (socket) => {
@@ -93,6 +202,71 @@ io.on("connection", (socket) => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    },
+  );
+
+  socket.on(
+    "resolveVoiceMessage",
+    (payload: { senderUsername?: string; messageId?: string; voiceSimpleId?: number } | undefined) => {
+      const voiceSimpleIdArg =
+        typeof payload?.voiceSimpleId === "number" && Number.isFinite(payload.voiceSimpleId)
+          ? Math.floor(payload.voiceSimpleId)
+          : null;
+      if (voiceSimpleIdArg !== null) {
+        const messageId = simpleVoiceIdToIgMessageId.get(voiceSimpleIdArg);
+        if (!messageId) {
+          socket.emit("resolveVoiceMessage:result", {
+            ok: false,
+            error: "audio nao encontrado para esse id",
+          });
+          return;
+        }
+        const voice = voiceMessages.get(messageId);
+        if (!voice) {
+          socket.emit("resolveVoiceMessage:result", {
+            ok: false,
+            error: "mensagem de audio expirada ou inexistente",
+          });
+          return;
+        }
+        socket.emit("resolveVoiceMessage:result", {
+          ok: true,
+          messageId,
+          voiceSimpleId: voiceSimpleIdArg,
+          senderUsername: voice.senderUsername,
+          playbackUrl: `${publicBaseUrl}/voice/${voiceSimpleIdArg}`,
+        });
+        return;
+      }
+
+      const senderUsername = String(payload?.senderUsername || "").trim().toLowerCase();
+      const explicitMessageId = String(payload?.messageId || "").trim();
+      const messageId =
+        explicitMessageId || (senderUsername ? latestVoiceByUser.get(senderUsername) || "" : "");
+      if (!messageId) {
+        socket.emit("resolveVoiceMessage:result", {
+          ok: false,
+          error: "nenhuma mensagem de audio encontrada para esse usuario",
+        });
+        return;
+      }
+      const voice = voiceMessages.get(messageId);
+      if (!voice) {
+        socket.emit("resolveVoiceMessage:result", {
+          ok: false,
+          error: "mensagem de audio expirada ou inexistente",
+        });
+        return;
+      }
+      const voiceSimpleId = igMessageIdToSimpleVoiceId.get(messageId) ?? null;
+      const playbackPath = voiceSimpleId != null ? String(voiceSimpleId) : encodeURIComponent(messageId);
+      socket.emit("resolveVoiceMessage:result", {
+        ok: true,
+        messageId,
+        voiceSimpleId,
+        senderUsername: voice.senderUsername,
+        playbackUrl: `${publicBaseUrl}/voice/${playbackPath}`,
+      });
     },
   );
 
@@ -572,6 +746,16 @@ io.on("connection", (socket) => {
     try {
       const result = await client.startDmTap(
         (evt) => {
+          const voiceMeta = rememberVoiceEvent(evt);
+          const enriched = {
+            ...evt,
+            ...(voiceMeta
+              ? {
+                  voiceSimpleId: voiceMeta.voiceSimpleId,
+                  playbackUrl: voiceMeta.playbackUrl,
+                }
+              : {}),
+          };
           log("dmTap newMessage event", {
             socketId: socket.id,
             topic: evt.topic,
@@ -579,8 +763,10 @@ io.on("connection", (socket) => {
             threadId: evt.threadId,
             preview: (evt.text || "").slice(0, 80),
             source: evt.source,
+            hasVoice: Boolean(evt.voiceMediaUrl),
+            voiceSimpleId: voiceMeta?.voiceSimpleId,
           });
-          socket.emit("dmTap:newMessage", evt);
+          socket.emit("dmTap:newMessage", enriched);
         },
         // So instalamos callback de debug se o cliente pediu; caso contrario,
         // o IIFE no browser roda em modo silencioso (sem flood de telemetria).

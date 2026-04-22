@@ -112,6 +112,11 @@ export interface DmTapEvent {
   messageId?: string | null;
   seqId?: string | null;
   typename?: string | null;
+  voiceMediaUrl?: string | null;
+  /** Atribuido pelo servidor: ID simples (1, 2, 3) para o proxy de audio. */
+  voiceSimpleId?: number | null;
+  /** URL do servidor para tocar o audio (proxy autenticado). */
+  playbackUrl?: string | null;
   timestamp: string;
   source: "thrift" | "json";
 }
@@ -1880,5 +1885,23 @@ export class InstaConnect {
       return w.__IG_DM_TAP_STATS__ || null;
     });
     return stats || {};
+  }
+
+  public async getInstagramMediaAuthHeaders(): Promise<Record<string, string>> {
+    const page = (this.dmTapPage && !this.dmTapPage.isClosed() ? this.dmTapPage : this.page) || null;
+    if (!page) {
+      throw new Error("Pagina do navegador nao inicializada.");
+    }
+
+    const cookies = await page.cookies("https://www.instagram.com");
+    const cookieHeader = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+    const userAgent = await page.evaluate(() => navigator.userAgent).catch(() => "");
+
+    return {
+      cookie: cookieHeader,
+      "user-agent": userAgent || "Mozilla/5.0",
+      referer: "https://www.instagram.com/direct/inbox/",
+      accept: "*/*",
+    };
   }
 }

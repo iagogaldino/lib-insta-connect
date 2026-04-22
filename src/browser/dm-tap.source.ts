@@ -609,6 +609,7 @@ export const DM_TAP_SOURCE = String.raw`
                 messageId: heur.messageId,
                 seqId: heur.seqId,
                 typename: heur.typename,
+                voiceMediaUrl: heur.voiceMediaUrl,
                 raw: obj,
                 source: "json",
               });
@@ -716,6 +717,42 @@ export const DM_TAP_SOURCE = String.raw`
       return null;
     }
 
+    function pickVoiceMediaUrl(n) {
+      function isAudioUrl(value) {
+        if (!value || typeof value !== "string") return false;
+        var v = value.toLowerCase();
+        return (
+          /^https?:\/\//.test(v) &&
+          (v.includes(".m4a") || v.includes(".aac") || v.includes(".mp3") || v.includes("audio"))
+        );
+      }
+      function walkVoice(node) {
+        if (!node || typeof node !== "object") return null;
+        if (Array.isArray(node)) {
+          for (var i = 0; i < node.length; i++) {
+            var fromArray = walkVoice(node[i]);
+            if (fromArray) return fromArray;
+          }
+          return null;
+        }
+        for (var k in node) {
+          if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+          var v = node[k];
+          var lk = String(k).toLowerCase();
+          if (typeof v === "string") {
+            if (isAudioUrl(v) && (lk.includes("audio") || lk.includes("voice") || lk.includes("url"))) {
+              return v;
+            }
+          } else if (v && typeof v === "object") {
+            var nested = walkVoice(v);
+            if (nested) return nested;
+          }
+        }
+        return null;
+      }
+      return walkVoice(n);
+    }
+
     function pickSenderDetails(n) {
       // Instagram aninha em .sender / .sender.user_dict
       if (n.sender && typeof n.sender === "object") {
@@ -752,6 +789,7 @@ export const DM_TAP_SOURCE = String.raw`
         }
         var mid = n.message_id || n.mid || (n.message && (n.message.message_id || n.message.mid)) || null;
         var seq = n.uq_seq_id || n.seq_id || (n.message && (n.message.uq_seq_id || n.message.seq_id)) || null;
+        var voiceMediaUrl = pickVoiceMediaUrl(n) || (n.message ? pickVoiceMediaUrl(n.message) : null);
         // deduplica por messageId para evitar hits duplicados (outer + inner .message)
         var dedupKey = mid || seq || null;
         if (dedupKey && seenIds[dedupKey]) {
@@ -774,6 +812,7 @@ export const DM_TAP_SOURCE = String.raw`
             seqId: seq ? String(seq) : null,
             senderName: details ? details.name : null,
             senderUsername: details ? details.username : null,
+            voiceMediaUrl: voiceMediaUrl ? String(voiceMediaUrl) : null,
           };
           results.push(entry);
           if (dedupKey) seenIds[dedupKey] = entry;
@@ -833,6 +872,7 @@ export const DM_TAP_SOURCE = String.raw`
       messageId: s(raw.messageId),
       seqId: s(raw.seqId),
       typename: raw.typename ? String(raw.typename) : null,
+      voiceMediaUrl: raw.voiceMediaUrl ? String(raw.voiceMediaUrl) : null,
       timestamp: raw.timestamp || new Date().toISOString(),
       source: raw.source === "thrift" ? "thrift" : "json",
     };
