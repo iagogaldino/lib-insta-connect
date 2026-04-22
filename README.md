@@ -46,23 +46,28 @@ npm install
 
 | Script | Descrição |
 | --- | --- |
-| `npm run dev` | Executa `src/example.ts` com nodemon (exemplo de uso direto da classe) |
+| `npm run dev` | Sobe o servidor Socket.IO em modo dev: nodemon + `ts-node` conforme `nodemon.json` (por padrão `src/socket-server.ts`; mesma intenção de `socket:dev`) |
 | `npm run build` | Compila TypeScript para `dist/` |
-| `npm start` | Roda o exemplo compilado |
-| `npm run socket:dev` | Sobe o servidor Socket.IO em modo dev (TS + nodemon) na porta `4010` |
+| `npm start` | Roda `dist/example.js` (exemplo compilado) |
+| `npm run socket:dev` | Sobe o servidor Socket.IO em modo dev (TS + nodemon) — porta em `PORT` (default `4010`) |
 | `npm run socket` | Roda o servidor Socket.IO compilado |
 | `npm run socket:client:dev` | CLI interativo (cliente Socket.IO) em TS |
 | `npm run socket:client` | CLI interativo compilado |
 | `npm run build:userscript` | Gera `src/browser/dm-tap.user.js` a partir de `dm-tap.source.ts` (Tampermonkey) |
 
+Para experimentar a classe `InstaConnect` sem o socket, use o exemplo: `npx ts-node src/example.ts` (ou `npm start` após `npm run build`).
+
 ## Configuração por variáveis de ambiente
 
 | Variável | Default | Função |
 | --- | --- | --- |
+| `PORT` | `4010` | Porta HTTP do `socket-server` (Socket.IO + proxy `/voice` e `/image`). |
+| `PUBLIC_BASE_URL` | `http://localhost:<PORT>` | Base pública usada nas URLs de mídia retornadas ao cliente; em deploy atrás de domínio, aponte para a URL acessível de fora. |
 | `SESSION_DIR` | `.session/chrome-profile` | Diretório do perfil do Chromium (cookies, localStorage). Alterar permite múltiplas contas. |
 | `SEEN_MESSAGES_FILE` | `.session/seen-message-ids.json` | Cache LRU de `messageId`s já emitidos pelo `dmTap` (deduplicação entre reinicializações). |
-| `SOCKET_URL` | `http://localhost:4010` | URL usada pelo cliente CLI e pelos scripts de exemplo para conectar no socket-server. |
+| `SOCKET_URL` | `http://localhost:4010` | URL usada pelo cliente CLI e pelos scripts de exemplo para conectar no socket-server (alinhada a `PORT` se você mudar a porta). |
 | `INSTA_HEADLESS` | `false` | Define se o Chromium roda em headless (`true`) ou visível (`false`). |
+| `INSTA_VIEWPORT_WIDTH` / `INSTA_VIEWPORT_HEIGHT` | efetivo **1024**×**600** se omitidos (com clamp) | Viewport “desktop” do Chromium. Largura nunca fica abaixo de 1024 nem altura abaixo de 600, para evitar layout mobile. |
 | `DM_TAP_DEBUG` | `0` | Quando `1`, habilita o canal `dmTap:debug` no live client de exemplo. |
 
 Exemplo:
@@ -80,7 +85,7 @@ INSTA_HEADLESS=true npm run socket:dev
 ## Uso rápido como biblioteca
 
 ```ts
-import { InstaConnect } from "lib-insta-connect"; // ou "./src/index"
+import { InstaConnect } from "lib-insta-connect"; // re-exporta `./src/insta-connect/InstaConnect` e tipos em `./src/types`
 
 const client = new InstaConnect({ headless: false });
 
@@ -102,12 +107,15 @@ Principais métodos públicos da classe `InstaConnect`:
 - `login(username, password)` — faz login e persiste cookies no profile
 - `close()` — encerra o browser
 - `listConversations(limit)` — scraping DOM da inbox
+- `searchUsers(query, { limit? })` — busca de contas combinando respostas de rede (JSON) e links no DOM; requer sessão autenticada
 - `listConversationsByNetworkIntercept(timeoutMs)` — extrai inbox via interceptação de rede (mais robusto que DOM)
 - `sendMessageToConversation(title, text)` — envia uma DM por simulação de teclado (DOM)
+- `openConversationByTitle(title, { dedicatedTab? })` — abre conversa por título; base para o comando socket `openConversation` e o fluxo `mto:` no CLI
 - `listMessagesByThreadId(threadId, limit)` — lê mensagens de uma thread
 - `startMessageListener(onEvent)` / `stopMessageListener()` — escuta toda mensagem nova (via interceptação de rede)
 - `startThreadListener(threadId, onEvent)` / `stopThreadListener()` — escuta novas mensagens de uma thread específica
-- **`startDmTap(onMessage, onDebug?)` / `stopDmTap()` / `getDmTapStats()`** — interceptação direta do WebSocket MQTT do IG (ver [DM Tap](#dm-tap--interceptação-de-mensagens-em-tempo-real))
+- **`startDmTap(onMessage, onDebug?)` / `stopDmTap()` / `isDmTapActive()` / `getDmTapStats()`** — interceptação direta do WebSocket MQTT do IG (ver [DM Tap](#dm-tap--interceptação-de-mensagens-em-tempo-real))
+- `getInstagramMediaAuthHeaders()` — cabeçalhos de autenticação para o proxy de mídia (cookies/sessão)
 - `debugInboxTraffic(timeoutMs)` / `debugMessageTransport(timeoutMs)` / `debugInstagramSocket(timeoutMs)` / `probeInstagramRealtime(timeoutMs)` — helpers de diagnóstico de tráfego
 
 ---
@@ -120,7 +128,7 @@ Suba o servidor:
 npm run socket:dev
 ```
 
-Endpoint: `ws://localhost:4010` (Socket.IO, transport `websocket`).
+Endpoint: `http://localhost:<PORT>` com Socket.IO (ex.: `ws://localhost:4010` se `PORT=4010`, transporte típico `websocket`).
 
 Assim que um cliente conecta, recebe o evento `status`:
 
@@ -136,6 +144,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `login` | `{ username, password }` | Faz login com credenciais |
 | `closeBrowser` | — | Encerra o Chromium |
 | `listConversations` | `{ limit? }` | Lista conversas da inbox via DOM |
+| `searchUsers` | `{ query, limit? }` | Busca de usuários; `query` é obrigatório |
 | `listConversationsIntercept` | `{ timeoutMs? }` | Lista conversas via interceptação de rede |
 | `debugInboxTraffic` | `{ timeoutMs? }` | Snapshot de requests/respostas da inbox |
 | `debugMessageTransport` | `{ timeoutMs?, withMessagesOnly? }` | Snapshot de tráfego relacionado a mensagens |
@@ -150,7 +159,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | **`startDmTap`** | `{ debug? }` | Liga o interceptador de DMs via MQTT (emite `dmTap:newMessage`) |
 | **`stopDmTap`** | — | Desliga o interceptador |
 | **`getDmTapStats`** | — | Retorna telemetria do parser (frames vistos, payloads JSON, Thrift, erros) |
-| **`openConversation`** | `{ conversationTitle, dedicatedTab?, autoStartDmTap? }` | Abre uma conversa pelo título; com `mto:` o cliente envia aba dedicada e pode ligar o dmTap automaticamente |
+| **`openConversation`** | `{ conversationTitle, dedicatedTab?, autoStartDmTap?, preloadMessages? }` | Abre conversa por título; `preloadMessages` tenta anexar últimas mensagens da thread; `autoStartDmTap` liga o tap se ainda inativo. No CLI, o prefixo `mto:` aplica aba dedicada e dmTap automático. |
 | **`resolveVoiceMessage`** | `{ senderUsername? \| voiceSimpleId? \| messageId? }` | Último áudio do usuário ou link por id simples (proxy `GET /voice/:id`) |
 | **`resolveImageMessage`** | `{ senderUsername? \| imageSimpleId? \| messageId? }` | Última imagem do usuário ou link por id simples (proxy `GET /image/:id`) |
 
@@ -163,6 +172,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `login:result` | Resposta de `login` |
 | `closeBrowser:result` | Resposta de `closeBrowser` |
 | `listConversations:result` | Resposta de `listConversations` |
+| `searchUsers:result` | Resposta de `searchUsers` |
 | `listConversationsIntercept:result` | Resposta de `listConversationsIntercept` |
 | `debugInboxTraffic:result` | Resposta de `debugInboxTraffic` |
 | `debugMessageTransport:result` | Resposta de `debugMessageTransport` |
@@ -174,6 +184,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `startThreadListener:result` / `stopThreadListener:result` | Ack de ligar/desligar listener de thread |
 | `startDmTap:result` / `stopDmTap:result` | Ack de ligar/desligar dmTap |
 | `getDmTapStats:result` | Resposta de `getDmTapStats` |
+| `openConversation:result` | Resposta de `openConversation` (inclui URL da thread e, com `preloadMessages`, mensagens carregadas ou erro) |
 | `newMessage` | Mensagem nova capturada por `startMessageListener` / `startThreadListener` |
 | **`dmTap:newMessage`** | Mensagem decodificada pelo dmTap (MQTT/JSON/Thrift) |
 | **`dmTap:debug`** | Telemetria opcional do parser (apenas quando iniciado com `{ debug: true }`) |
@@ -189,12 +200,13 @@ Em um segundo terminal:
 npm run socket:client:dev
 ```
 
-Comandos disponíveis:
+Comandos disponíveis (espelhados em `src/client/help.ts`):
 
 ```
 openLogin
 login <username> <password>
 listConversations [limit]
+searchUsers <query> [limit]
 listConversationsIntercept [timeoutMs]
 debugInboxTraffic [timeoutMs]
 debugMessageTransport [timeoutMs]
@@ -202,18 +214,27 @@ debugMessageTransportOnly [timeoutMs]
 debugInstagramSocket [timeoutMs]
 debugInstagramSocketDirect [timeoutMs]
 probeInstagramRealtime [timeoutMs]
+openConversation <conversationTitle>
 sendMessage <conversationTitle> | <text>
 listMessages <threadId> [limit]
 startMessageListener
 stopMessageListener
 startThreadListener <threadId>
 stopThreadListener
+startDmTap [debug]
+stopDmTap
+getDmTapStats
+resolveVoiceMessage <senderUsername> | <id numerico do audio>
+resolveImageMessage <senderUsername> | <id numerico da foto>
+mto:<senderUsername>
 closeBrowser
 help
 exit
 ```
 
-> O CLI ainda não inclui atalhos para `startDmTap` / `stopDmTap`. Para testar o dmTap, use o script `scripts/live-dm-tap-client.ts` ou um cliente Socket.IO próprio (ver exemplos abaixo).
+Com o prefixo `mto:` (ex.: `mto:contaamiga`), o CLI abre a conversa em aba dedicada, pode iniciar o `dmTap` e entra no modo de envio (mensagem livre + atalhos `/audio`, `/foto`, etc. — ver `printMessageModeHelp` no mesmo ficheiro).
+
+Para testes mínimos só de socket/dmTap, ainda podes usar `scripts/live-dm-tap-client.ts` ou outro cliente Socket.IO.
 
 ---
 
@@ -389,19 +410,29 @@ Latência típica: **15–25 s** (dominada pelo tempo de navegação/renderizaç
 ```
 lib-insta-connect/
 ├── src/
-│   ├── index.ts                 # Classe InstaConnect (API principal)
-│   ├── socket-server.ts         # Servidor Socket.IO (porta 4010)
-│   ├── socket-client.ts         # CLI interativo
-│   ├── example.ts               # Exemplo standalone
+│   ├── index.ts                    # Re-export: tipos + InstaConnect
+│   ├── types.ts
+│   ├── example.ts
+│   ├── socket-server.ts            # HTTP + Socket.IO; usa `PORT` e `PUBLIC_BASE_URL`
+│   ├── socket-client.ts            # CLI interativo
+│   ├── insta-connect/
+│   │   └── InstaConnect.ts
+│   ├── server/
+│   │   ├── register-socket-handlers.ts
+│   │   └── media-proxy.ts
+│   ├── client/
+│   │   ├── help.ts
+│   │   └── dm-tap-format.ts
+│   ├── lib/                        # utilitários (env, parse, etc.)
 │   └── browser/
-│       ├── dm-tap.source.ts     # IIFE injetado no browser (MQTT parser)
-│       └── dm-tap.user.js       # Userscript gerado (Tampermonkey)
+│       ├── dm-tap.source.ts
+│       └── dm-tap.user.js
 ├── scripts/
-│   ├── build-userscript.ts      # Gera o dm-tap.user.js
-│   ├── live-dm-tap-client.ts    # Cliente live de teste do dmTap
-│   ├── smoke-dm-tap.ts          # Smoke offline do parser (básico)
-│   └── smoke-dm-tap-advanced.ts # Smoke offline do parser (casos avançados)
-└── .session/                    # (criado em runtime) perfil Chromium + cache dedup
+│   ├── build-userscript.ts
+│   ├── live-dm-tap-client.ts
+│   ├── smoke-dm-tap.ts
+│   └── smoke-dm-tap-advanced.ts
+└── .session/                       # (runtime) perfil Chromium + cache dedup
 ```
 
 ---
