@@ -88,6 +88,23 @@ socket.on("closeBrowser:result", (payload) => {
 });
 
 socket.on("listConversations:result", (payload) => {
+  const data = toRecord(payload);
+  if (data && data.ok) {
+    const list = data.conversations;
+    if (Array.isArray(list) && list.length > 0) {
+      for (const c of list) {
+        const o = toRecord(c);
+        if (!o) continue;
+        const title = String(o.title ?? "").trim() || "(sem titulo)";
+        const preview = String(o.preview ?? "").trim();
+        const href = String(o.href ?? "").trim();
+        const line = preview ? `  ${title} — ${preview}` : `  ${title}`;
+        console.log(href ? `${line}\n    ${href}` : line);
+      }
+    } else {
+      console.log("  (nenhuma conversa retornada)");
+    }
+  }
   log("listConversations:result", payload);
 });
 
@@ -221,7 +238,6 @@ socket.on("dmTap:newMessage", (payload) => {
 
     const formatted = formatDmTapMessage(payload);
     const playbackUrl = String(data?.playbackUrl ?? "").trim();
-    const imageViewUrl = String(data?.imageViewUrl ?? "").trim();
     if (formatted) {
       console.log(`[DM] ${formatted}`);
     }
@@ -232,14 +248,8 @@ socket.on("dmTap:newMessage", (payload) => {
           : null;
       console.log(sid != null ? `[AUDIO #${sid}] ${playbackUrl}` : `[AUDIO] ${playbackUrl}`);
     }
-    if (imageViewUrl) {
-      const iid =
-        typeof data?.imageSimpleId === "number" && Number.isFinite(data.imageSimpleId)
-          ? data.imageSimpleId
-          : null;
-      console.log(iid != null ? `[FOTO #${iid}] ${imageViewUrl}` : `[FOTO] ${imageViewUrl}`);
-    }
-    if (formatted || playbackUrl || imageViewUrl) {
+    // Nao repete o link /image/... a cada evento: use /foto (resolveImageMessage) para ver a URL.
+    if (formatted || playbackUrl || String(data?.imageViewUrl ?? "").trim()) {
       rl.prompt(true);
       return;
     }

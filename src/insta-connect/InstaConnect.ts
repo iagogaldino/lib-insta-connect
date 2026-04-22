@@ -46,16 +46,36 @@ export class InstaConnect {
   private lastSendTargetKey: string | null = null;
   private lastSendThreadId: string | null = null;
 
+  /** Instagram troca para layout "mobile" em viewports estreitas; o padrao e desktop. */
+  private getDesktopViewport() {
+    const rawW = Number(process.env.INSTA_VIEWPORT_WIDTH);
+    const rawH = Number(process.env.INSTA_VIEWPORT_HEIGHT);
+    const w = Math.min(3840, Math.max(1024, Number.isFinite(rawW) && rawW > 0 ? Math.floor(rawW) : 1000));
+    const h = Math.min(2160, Math.max(600, Number.isFinite(rawH) && rawH > 0 ? Math.floor(rawH) : 600));
+    return { width: w, height: h, deviceScaleFactor: 1, isMobile: false, hasTouch: false } as const;
+  }
+
+  private async applyDesktopViewportToPage(page: Page): Promise<void> {
+    try {
+      await page.setViewport(this.getDesktopViewport());
+    } catch {
+      // noop
+    }
+  }
+
   constructor(options: InstaConnectOptions = {}) {
     this.sessionDir = path.resolve(
       process.cwd(),
       process.env.SESSION_DIR || ".session/chrome-profile",
     );
+    const { args: userArgs, defaultViewport: userViewport, ...rest } = options;
+    const vp = this.getDesktopViewport();
     this.options = {
       headless: parseBooleanEnv(process.env.INSTA_HEADLESS, false),
-      defaultViewport: null,
       userDataDir: this.sessionDir,
-      ...options,
+      defaultViewport: userViewport !== undefined ? userViewport : { ...vp },
+      args: [`--window-size=${vp.width},${vp.height}`, ...(Array.isArray(userArgs) ? userArgs : [])],
+      ...rest,
     };
     this.seenStorePath = path.resolve(
       process.cwd(),
@@ -95,6 +115,7 @@ export class InstaConnect {
     );
     this.browser = await puppeteer.launch(this.options);
     this.page = await this.browser.newPage();
+    await this.applyDesktopViewportToPage(this.page);
     return this.browser;
   }
 
@@ -111,6 +132,7 @@ export class InstaConnect {
     }
 
     this.dmTapPage = await this.browser.newPage();
+    await this.applyDesktopViewportToPage(this.dmTapPage);
     this.dmTapBridgeInstalled = false;
     this.dmTapInitScriptInstalled = false;
     return this.dmTapPage;
@@ -136,6 +158,7 @@ export class InstaConnect {
     }
 
     const page = await this.browser.newPage();
+    await this.applyDesktopViewportToPage(page);
     this.conversationPages.set(key, page);
     await page.bringToFront().catch(() => null);
     return page;
@@ -325,47 +348,20 @@ export class InstaConnect {
       await this.launch();
     }
 
-    await this.page!.goto("https://www.instagram.com/direct/inbox/", {
-      waitUntil: "networkidle2",
-    });
-
-    await this.handlePostLoginPrompts();
-
-    await this.page!.waitForSelector("a[href*='/direct/t/']", { timeout: 60000 });
-
-    const conversations = await this.page!.evaluate((maxItems) => {
-      const anchors = Array.from(
-        document.querySelectorAll("a[href*='/direct/t/']"),
-      ) as HTMLAnchorElement[];
-
-      const unique = new Set<string>();
-      const result: Array<{ title: string; preview: string; href: string }> = [];
-
-      for (const anchor of anchors) {
-        const href = anchor.getAttribute("href") || "";
-        if (!href || unique.has(href)) continue;
-        unique.add(href);
-
-        const spans = Array.from(anchor.querySelectorAll("span"))
-          .map((el) => (el.textContent || "").trim())
-          .filter(Boolean);
-
-        const title = spans[0] || "Sem titulo";
-        const preview = spans[1] || "";
-
-        result.push({
-          title,
-          preview,
-          href: href.startsWith("http") ? href : `https://www.instagram.com${href}`,
-        });
-
-        if (result.length >= maxItems) break;
-      }
-
-      return result;
-    }, limit);
-
-    return conversations;
+    // O Web do Instagram muda o DOM com frequencia: listas muitas vezes nao usam mais
+    // <a href="/direct/t/...">. listConversationsByNetworkIntercept ja cobre API + fetch + DOM fallback.
+    const intercepted = await this.listConversationsByNetworkIntercept(8000);
+    const out: ConversationSummary[] = [];
+    for (const c of intercepted) {
+      if (out.length >= limit) break;
+      if (!c.threadId) continue;
+      out.push({
+        title: c.title,
+        preview: c.lastMessage,
+        href: `https://www.instagram.com/direct/t/${c.threadId}/`,
+      });
+    }
+    return out;
   }
 
   /** Indica se ja existe input de busca usavel (painel aberto). */
@@ -779,7 +775,8 @@ export class InstaConnect {
   }
 
   public async listConversationsByNetworkIntercept(
-    timeoutMs = 25000,
+    /** Tempo maximo (ms) aguardando a primeira carga de threads via rede antes de cair no fetch/DOM. */
+    timeoutMs = 8000,
   ): Promise<InterceptedConversation[]> {
     if (!this.page) {
       await this.launch();
@@ -878,11 +875,36 @@ export class InstaConnect {
 
     page.on("response", onResponse);
     try {
+      // `networkidle2` e raro com Instagram; demora muito. `load` basta p/ as APIs da inbox.
       await page.goto("https://www.instagram.com/direct/inbox/", {
-        waitUntil: "networkidle2",
+        waitUntil: "load",
+        timeout: 90000,
       });
       await this.handlePostLoginPrompts();
-      await sleep(timeoutMs);
+
+      const t0 = Date.now();
+      const maxMs = Math.min(20000, Math.max(2000, timeoutMs));
+      /** Se nada chegar na intercept (inbox vazia ou resposta muito atrasada), nao fica 20s em loop. */
+      const noDataGiveUpMs = 4500;
+
+      const hasAnyThread = (): boolean => {
+        const seen = new Set<string>();
+        for (const c of collected) {
+          if (c.threadId) seen.add(c.threadId);
+        }
+        return seen.size > 0;
+      };
+
+      for (;;) {
+        if (hasAnyThread()) {
+          await sleep(400);
+          break;
+        }
+        const elapsed = Date.now() - t0;
+        if (elapsed >= maxMs) break;
+        if (elapsed >= noDataGiveUpMs) break;
+        await sleep(120);
+      }
       done = true;
     } finally {
       page.off("response", onResponse);
