@@ -49,6 +49,14 @@ export interface CreateSessionPayload {
 export interface SessionSummary {
   sessionId: string;
   createdAt: string;
+  status?: {
+    browserOpen: boolean;
+    currentUrl: string | null;
+    loggedIn: boolean;
+    challengeRequired: boolean;
+    challengeType?: "security_code" | "two_factor" | "unknown";
+    message?: string;
+  };
 }
 
 export interface LoginResult {

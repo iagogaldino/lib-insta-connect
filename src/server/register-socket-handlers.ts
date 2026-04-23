@@ -18,7 +18,7 @@ export function registerSocketServer(
   io: Server,
   options: {
     getSession: (sessionId: string) => SessionContext | undefined;
-    listSessions: () => Array<{ sessionId: string; createdAt: Date }>;
+    listSessions: () => Array<{ sessionId: string; createdAt: Date; context: SessionContext }>;
     createSession: (sessionId?: string) => { sessionId: string; created: boolean; context: SessionContext };
     closeSession: (sessionId: string) => Promise<boolean>;
     log: (message: string, meta?: Record<string, unknown>) => void;
@@ -117,11 +117,34 @@ export function registerSocketServer(
       }
     });
 
-    socket.on("listSessions", () => {
-      socket.emit("listSessions:result", {
-        ok: true,
-        sessions: listSessions().map((s) => ({ sessionId: s.sessionId, createdAt: s.createdAt.toISOString() })),
-      });
+    socket.on("listSessions", async () => {
+      try {
+        const sessionsWithStatus = await Promise.all(
+          listSessions().map(async (s) => {
+            const status = await s.context.client.getSessionStatus().catch(() => ({
+              browserOpen: false,
+              currentUrl: null,
+              loggedIn: false,
+              challengeRequired: false,
+              message: "Falha ao consultar status da sessao.",
+            }));
+            return {
+              sessionId: s.sessionId,
+              createdAt: s.createdAt.toISOString(),
+              status,
+            };
+          }),
+        );
+        socket.emit("listSessions:result", {
+          ok: true,
+          sessions: sessionsWithStatus,
+        });
+      } catch (error) {
+        socket.emit("listSessions:result", {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     });
 
     socket.on("closeSession", async (payload: { sessionId?: string } | undefined) => {

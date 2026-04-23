@@ -406,6 +406,40 @@ export class InstaConnect {
     };
   }
 
+  public async getSessionStatus(): Promise<{
+    browserOpen: boolean;
+    currentUrl: string | null;
+    loggedIn: boolean;
+    challengeRequired: boolean;
+    challengeType?: "security_code" | "two_factor" | "unknown";
+    message?: string;
+  }> {
+    const page = this.page;
+    if (!this.browser || !page || page.isClosed()) {
+      return {
+        browserOpen: false,
+        currentUrl: null,
+        loggedIn: false,
+        challengeRequired: false,
+      };
+    }
+
+    const currentUrl = page.url();
+    const challenge = await this.detectLoginChallenge();
+    const loggedIn =
+      currentUrl.includes("instagram.com") &&
+      !currentUrl.includes("/accounts/login") &&
+      !challenge.required;
+
+    return {
+      browserOpen: true,
+      currentUrl,
+      loggedIn,
+      challengeRequired: challenge.required,
+      ...(challenge.required ? { challengeType: challenge.type, message: challenge.message } : {}),
+    };
+  }
+
   private async fillSecurityCodeInput(code: string): Promise<boolean> {
     const selectors = [
       'input[name="verificationCode"]',

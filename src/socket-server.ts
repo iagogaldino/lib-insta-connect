@@ -101,7 +101,12 @@ export function startInstaConnectSocketServer(
 
   registerSocketServer(io, {
     getSession: (sessionId) => sessions.get(sessionId),
-    listSessions: () => Array.from(sessions.entries()).map(([sessionId, context]) => ({ sessionId, createdAt: context.createdAt })),
+    listSessions: () =>
+      Array.from(sessions.entries()).map(([sessionId, context]) => ({
+        sessionId,
+        createdAt: context.createdAt,
+        context,
+      })),
     createSession,
     closeSession,
     log,
