@@ -1,4 +1,4 @@
-# lib-insta-connect
+# insta-connect-delsuc
 
 Biblioteca TypeScript/Node.js para automação do Instagram Web via Puppeteer, com servidor Socket.IO para controle em tempo real e um interceptador de DMs (`dmTap`) que decodifica mensagens diretamente do WebSocket MQTT do Instagram.
 
@@ -85,7 +85,7 @@ INSTA_HEADLESS=true npm run socket:dev
 ## Uso rápido como biblioteca
 
 ```ts
-import { InstaConnect } from "lib-insta-connect"; // re-exporta `./src/insta-connect/InstaConnect` e tipos em `./src/types`
+import { InstaConnect } from "insta-connect-delsuc"; // re-exporta `./src/insta-connect/InstaConnect` e tipos em `./src/types`
 
 const client = new InstaConnect({ headless: false });
 
@@ -408,7 +408,7 @@ Latência típica: **15–25 s** (dominada pelo tempo de navegação/renderizaç
 ## Estrutura de pastas
 
 ```
-lib-insta-connect/
+insta-connect-delsuc/
 ├── src/
 │   ├── index.ts                    # Re-export: tipos + InstaConnect
 │   ├── types.ts

@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         IG DM Tap PoC
-// @namespace    https://github.com/lib-insta-connect
+// @namespace    https://github.com/insta-connect-delsuc
 // @version      0.1.0
 // @description  Intercepta DMs do Instagram Web via monkey-patch do WebSocket + parser MQTT/Thrift.
-// @author       lib-insta-connect
+// @author       insta-connect-delsuc
 // @match        https://www.instagram.com/*
 // @match        https://*.instagram.com/*
 // @run-at       document-start

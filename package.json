@@ -1,5 +1,5 @@
 {
-  "name": "lib-insta-connect",
+  "name": "insta-connect-delsuc",
   "version": "0.1.0",
   "description": "Biblioteca para automacao de interacoes com Instagram via Puppeteer",
   "main": "dist/index.js",
