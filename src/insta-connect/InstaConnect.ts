@@ -137,8 +137,38 @@ export class InstaConnect {
     );
   }
 
+  /**
+   * Encerra o Chromium e anula o estado (listeners, abas) para o proximo `launch()`.
+   * Necessario apos a janela fechada manualmente: `this.browser` ainda e truthy, mas
+   * `isConnected()` e false. Idempotente.
+   */
+  private async tearDownPuppeteerSession(): Promise<void> {
+    this.stopMessageListener();
+    this.stopThreadListener();
+    this.stopDmTap();
+    if (this.browser) {
+      await this.browser.close().catch(() => null);
+    }
+    this.browser = null;
+    this.page = null;
+    this.dmTapPage = null;
+    this.conversationPages.clear();
+    this.dmTapBridgeInstalled = false;
+    this.dmTapInitScriptInstalled = false;
+  }
+
   public async launch(): Promise<Browser> {
-    if (this.browser) return this.browser;
+    if (this.browser?.isConnected() && this.page && !this.page.isClosed()) {
+      return this.browser;
+    }
+
+    if (this.browser?.isConnected() && (!this.page || this.page.isClosed())) {
+      this.page = await this.browser.newPage();
+      await this.applyDesktopViewportToPage(this.page);
+      return this.browser;
+    }
+
+    await this.tearDownPuppeteerSession();
     await fs.mkdir(this.sessionDir, { recursive: true });
     console.log(
       `[${new Date().toISOString()}] [insta-connect] carregando sessao de ${this.sessionDir}`,
@@ -150,9 +180,7 @@ export class InstaConnect {
   }
 
   private async getOrCreateDmTapPage(): Promise<Page> {
-    if (!this.browser) {
-      await this.launch();
-    }
+    await this.launch();
     if (!this.browser) {
       throw new Error("Navegador nao inicializado.");
     }
@@ -174,9 +202,7 @@ export class InstaConnect {
       throw new Error("conversationTitle e obrigatorio.");
     }
 
-    if (!this.browser) {
-      await this.launch();
-    }
+    await this.launch();
     if (!this.browser) {
       throw new Error("Navegador nao inicializado.");
     }
@@ -195,9 +221,7 @@ export class InstaConnect {
   }
 
   public async openLoginPage(): Promise<string> {
-    if (!this.browser || !this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     await this.page!.goto("https://www.instagram.com/accounts/login/", {
       waitUntil: "networkidle2",
@@ -417,7 +441,7 @@ export class InstaConnect {
     message?: string;
   }> {
     const page = this.page;
-    if (!this.browser || !page || page.isClosed()) {
+    if (!this.browser || !this.browser.isConnected() || !page || page.isClosed()) {
       return {
         browserOpen: false,
         currentUrl: null,
@@ -662,9 +686,7 @@ export class InstaConnect {
   }
 
   public async submitSecurityCode(code: string): Promise<LoginResult> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const normalized = String(code || "").trim();
     if (!normalized) {
       throw new Error("code e obrigatorio.");
@@ -694,9 +716,7 @@ export class InstaConnect {
   }
 
   public async listConversations(limit = 20): Promise<ConversationSummary[]> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     // O Web do Instagram muda o DOM com frequencia: listas muitas vezes nao usam mais
     // <a href="/direct/t/...">. listConversationsByNetworkIntercept ja cobre API + fetch + DOM fallback.
@@ -938,9 +958,7 @@ export class InstaConnect {
     }
     const limit = Math.min(Math.max(1, options?.limit ?? 25), 100);
 
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
@@ -1128,9 +1146,7 @@ export class InstaConnect {
     /** Tempo maximo (ms) aguardando a primeira carga de threads via rede antes de cair no fetch/DOM. */
     timeoutMs = 8000,
   ): Promise<InterceptedConversation[]> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     const page = this.page;
     if (!page) {
@@ -1394,9 +1410,7 @@ export class InstaConnect {
     options?: { limit?: number },
   ): Promise<{ users: InstagramSuggestedUser[]; url: string }> {
     const limit = Math.min(Math.max(1, options?.limit ?? 24), 100);
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
@@ -1631,9 +1645,7 @@ export class InstaConnect {
   }
 
   private async getViewerUserIdFromCookie(): Promise<string | null> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       return null;
@@ -1671,9 +1683,7 @@ export class InstaConnect {
     if (!uname) {
       throw new Error("username e obrigatorio.");
     }
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
@@ -1722,9 +1732,7 @@ export class InstaConnect {
   }
 
   private async ensureExplorePeopleReady(): Promise<Page> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
@@ -1855,9 +1863,7 @@ export class InstaConnect {
   }
 
   private async ensureInstagramAuthedPage(): Promise<Page> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
@@ -1959,9 +1965,7 @@ export class InstaConnect {
 
     const search = await this.searchUsers(uname, { limit: 25 });
     const match = search.users.find((u) => u.username.toLowerCase() === key);
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
@@ -2231,9 +2235,7 @@ export class InstaConnect {
   }
 
   public async debugInboxTraffic(timeoutMs = 12000): Promise<TrafficRecord[]> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     const page = this.page;
     if (!page) {
@@ -2303,9 +2305,7 @@ export class InstaConnect {
   }
 
   public async debugMessageTransport(timeoutMs = 15000): Promise<MessageTransportRecord[]> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     const page = this.page;
     if (!page) {
@@ -2409,9 +2409,7 @@ export class InstaConnect {
   }
 
   public async debugInstagramSocket(timeoutMs = 15000): Promise<InstagramSocketFrameRecord[]> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     const page = this.page;
     if (!page) {
@@ -2570,7 +2568,7 @@ export class InstaConnect {
     options?: { dedicatedTab?: boolean },
   ): Promise<SendMessageResult> {
     const useDedicatedTab = Boolean(options?.dedicatedTab);
-    if (!useDedicatedTab && !this.page) {
+    if (!useDedicatedTab) {
       await this.launch();
     }
 
@@ -2616,7 +2614,7 @@ export class InstaConnect {
     options?: { dedicatedTab?: boolean },
   ): Promise<OpenConversationResult> {
     const useDedicatedTab = Boolean(options?.dedicatedTab);
-    if (!useDedicatedTab && !this.page) {
+    if (!useDedicatedTab) {
       await this.launch();
     }
 
@@ -2745,9 +2743,7 @@ export class InstaConnect {
     threadId: string,
     limit = 20,
   ): Promise<{ threadId: string; count: number; messages: MessageItem[]; url: string }> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     const page = this.page;
     if (!page) {
@@ -2900,26 +2896,13 @@ export class InstaConnect {
   }
 
   public async close(): Promise<void> {
-    this.stopMessageListener();
-    this.stopThreadListener();
-    this.stopDmTap();
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.page = null;
-      this.dmTapPage = null;
-      this.conversationPages.clear();
-      this.dmTapBridgeInstalled = false;
-      this.dmTapInitScriptInstalled = false;
-    }
+    await this.tearDownPuppeteerSession();
   }
 
   public async startMessageListener(
     onMessage: (event: IncomingMessageEvent) => void,
   ): Promise<{ started: boolean; url: string }> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
 
     const page = this.page;
     if (!page) {
@@ -3092,9 +3075,7 @@ export class InstaConnect {
     threadId: string,
     onMessage: (event: IncomingMessageEvent) => void,
   ): Promise<{ started: boolean; threadId: string; url: string }> {
-    if (!this.page) {
-      await this.launch();
-    }
+    await this.launch();
     const page = this.page;
     if (!page) {
       throw new Error("Pagina do navegador nao inicializada.");
