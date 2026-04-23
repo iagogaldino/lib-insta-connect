@@ -8,9 +8,11 @@ import { decodeWebsocketPayload, isMessageTransportUrl } from "../lib/websocket-
 import { collectUsersFromSearchJson } from "../lib/instagram-search-json";
 import type { HTTPResponse } from "puppeteer";
 import type {
+  AutoFollowItemResult,
   AutoFollowPrivacyFilter,
   ConversationSummary,
   DmTapEvent,
+  AutoFollowFollowersOfUserResult,
   AutoFollowSuggestedResult,
   FollowUserResult,
   InstaConnectConfig,
@@ -1738,51 +1740,10 @@ export class InstaConnect {
     return page;
   }
 
-  private async executeFollowByIdOnCurrentPage(userId: string): Promise<FollowUserResult> {
-    const targetUserId = String(userId || "").trim();
-    if (!/^\d+$/.test(targetUserId)) {
-      throw new Error("userId invalido. Informe o id numerico do Instagram.");
-    }
-    const page = await this.ensureExplorePeopleReady();
-
-    const response = await page.evaluate(async (id) => {
-      const csrf = (() => {
-        const fromCookie = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/)?.[1];
-        return fromCookie ? decodeURIComponent(fromCookie) : "";
-      })();
-
-      const body = new URLSearchParams({
-        container_module: "unknown",
-        include_follow_friction_check: "true",
-        nav_chain: "PolarisExplorePeopleRoot:discoverPeoplePage:1:via_cold_start",
-        user_id: id,
-      });
-
-      const res = await fetch(`/api/v1/friendships/create/${id}/`, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          accept: "*/*",
-          "content-type": "application/x-www-form-urlencoded",
-          "x-csrftoken": csrf,
-          "x-ig-app-id": "936619743392459",
-          "x-requested-with": "XMLHttpRequest",
-        },
-        body: body.toString(),
-      });
-      let payload: unknown = null;
-      try {
-        payload = await res.json();
-      } catch {
-        payload = null;
-      }
-      return {
-        ok: res.ok,
-        statusCode: res.status,
-        payload,
-      };
-    }, targetUserId);
-
+  private followUserResultFromCreateResponse(
+    targetUserId: string,
+    response: { ok: boolean; statusCode: number; payload: unknown },
+  ): FollowUserResult {
     const payload = (response.payload || {}) as {
       friendship_status?: Record<string, unknown>;
       previous_following?: boolean;
@@ -1792,7 +1753,9 @@ export class InstaConnect {
     };
 
     if (!response.ok) {
-      throw new Error(payload.message || payload.error || `Falha ao seguir usuario (${response.statusCode})`);
+      throw new Error(
+        payload.message || payload.error || `Falha ao seguir usuario (${response.statusCode})`,
+      );
     }
 
     return {
@@ -1817,8 +1780,334 @@ export class InstaConnect {
     };
   }
 
+  /**
+   * POST de follow na origem da pagina atual (sem navegar). Usado apos
+   * `ensureExplorePeopleReady` ou com o perfil ja carregado.
+   */
+  private async postFriendshipCreateInPage(
+    page: Page,
+    userId: string,
+    context: { containerModule: string; navChain: string },
+  ): Promise<FollowUserResult> {
+    const targetUserId = String(userId || "").trim();
+    if (!/^\d+$/.test(targetUserId)) {
+      throw new Error("userId invalido. Informe o id numerico do Instagram.");
+    }
+
+    const response = await page.evaluate(
+      async (args: { id: string; containerModule: string; navChain: string }) => {
+        const csrf = (() => {
+          const fromCookie = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/)?.[1];
+          return fromCookie ? decodeURIComponent(fromCookie) : "";
+        })();
+
+        const body = new URLSearchParams({
+          container_module: args.containerModule,
+          include_follow_friction_check: "true",
+          nav_chain: args.navChain,
+          user_id: args.id,
+        });
+
+        const res = await fetch(`/api/v1/friendships/create/${args.id}/`, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            accept: "*/*",
+            "content-type": "application/x-www-form-urlencoded",
+            "x-csrftoken": csrf,
+            "x-ig-app-id": "936619743392459",
+            "x-requested-with": "XMLHttpRequest",
+          },
+          body: body.toString(),
+        });
+        let payload: unknown = null;
+        try {
+          payload = await res.json();
+        } catch {
+          payload = null;
+        }
+        return {
+          ok: res.ok,
+          statusCode: res.status,
+          payload,
+        };
+      },
+      {
+        id: targetUserId,
+        containerModule: context.containerModule,
+        navChain: context.navChain,
+      },
+    );
+
+    return this.followUserResultFromCreateResponse(targetUserId, response);
+  }
+
+  private async executeFollowByIdOnCurrentPage(userId: string): Promise<FollowUserResult> {
+    const page = await this.ensureExplorePeopleReady();
+    return this.postFriendshipCreateInPage(page, userId, {
+      containerModule: "unknown",
+      navChain: "PolarisExplorePeopleRoot:discoverPeoplePage:1:via_cold_start",
+    });
+  }
+
   public async followUserById(userId: string): Promise<FollowUserResult> {
     return this.executeFollowByIdOnCurrentPage(userId);
+  }
+
+  private async ensureInstagramAuthedPage(): Promise<Page> {
+    if (!this.page) {
+      await this.launch();
+    }
+    const page = this.page;
+    if (!page) {
+      throw new Error("Pagina do navegador nao inicializada.");
+    }
+    if (page.url().includes("/accounts/login")) {
+      throw new Error("Sessao nao autenticada. Faca login antes de continuar.");
+    }
+    return page;
+  }
+
+  private async fetchFollowersApiPage(
+    page: Page,
+    targetUserId: string,
+    maxId: string | null,
+    count: number,
+  ): Promise<{
+    users: Array<{ userId: string; username: string; isPrivate?: boolean }>;
+    nextMaxId: string | null;
+    httpError?: string;
+  }> {
+    const tid = String(targetUserId || "").trim();
+    if (!/^\d+$/.test(tid)) {
+      throw new Error("targetUserId invalido.");
+    }
+    const c = Math.min(Math.max(1, count), 50);
+
+    const result = await page.evaluate(
+      async (args: { id: string; maxId: string | null; count: number }) => {
+        const qs = new URLSearchParams();
+        qs.set("count", String(args.count));
+        qs.set("search_surface", "follow_list_page");
+        if (args.maxId) {
+          qs.set("max_id", args.maxId);
+        }
+        const url = `/api/v1/friendships/${args.id}/followers/?${qs.toString()}`;
+        const res = await fetch(url, {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            accept: "*/*",
+            "x-ig-app-id": "936619743392459",
+            "x-requested-with": "XMLHttpRequest",
+          },
+        });
+        let json: any = null;
+        try {
+          json = await res.json();
+        } catch {
+          json = null;
+        }
+        if (!res.ok) {
+          const msg = json?.message || json?.error || `http_${res.status}`;
+          return {
+            ok: false as const,
+            error: String(msg),
+            users: [] as Array<{ userId: string; username: string; isPrivate?: boolean }>,
+            nextMaxId: null as string | null,
+          };
+        }
+        const raw = Array.isArray(json?.users) ? json.users : [];
+        const users = raw
+          .map((u: any) => {
+            const id = String(u?.pk ?? u?.id ?? "").trim();
+            const username = String(u?.username ?? "").trim();
+            const isPrivate =
+              typeof u?.is_private === "boolean" ? Boolean(u.is_private) : undefined;
+            if (!/^\d+$/.test(id) || !username) {
+              return null;
+            }
+            return { userId: id, username, isPrivate };
+          })
+          .filter(Boolean) as Array<{ userId: string; username: string; isPrivate?: boolean }>;
+        const next =
+          json?.next_max_id != null && String(json.next_max_id).length > 0
+            ? String(json.next_max_id)
+            : null;
+        return { ok: true as const, error: null as string | null, users, nextMaxId: next };
+      },
+      { id: tid, maxId, count: c },
+    );
+
+    if (!result.ok) {
+      return { users: [], nextMaxId: null, httpError: result.error || "fetch_followers_falhou" };
+    }
+    return { users: result.users, nextMaxId: result.nextMaxId };
+  }
+
+  /**
+   * Busca (UI) e abre o perfil alvo, ou acessa a URL direta se nao houver match exato na lista.
+   */
+  private async openTargetProfileBySearchOrDirect(username: string): Promise<"search" | "direct"> {
+    const uname = String(username || "")
+      .trim()
+      .replace(/^@+/, "");
+    if (!uname) {
+      throw new Error("username e obrigatorio.");
+    }
+    const key = uname.toLowerCase();
+
+    const search = await this.searchUsers(uname, { limit: 25 });
+    const match = search.users.find((u) => u.username.toLowerCase() === key);
+    if (!this.page) {
+      await this.launch();
+    }
+    const page = this.page;
+    if (!page) {
+      throw new Error("Pagina do navegador nao inicializada.");
+    }
+    if (match) {
+      await page.goto(match.href, { waitUntil: "networkidle2" });
+      await this.handlePostLoginPrompts();
+      if (page.url().includes("/accounts/login")) {
+        throw new Error("Sessao nao autenticada. Faca login antes de continuar.");
+      }
+      return "search";
+    }
+
+    const href = `https://www.instagram.com/${encodeURIComponent(uname)}/`;
+    await page.goto(href, { waitUntil: "networkidle2" });
+    await this.handlePostLoginPrompts();
+    if (page.url().includes("/accounts/login")) {
+      throw new Error("Sessao nao autenticada. Faca login antes de continuar.");
+    }
+    return "direct";
+  }
+
+  public async autoFollowFollowersOfUser(
+    targetUsername: string,
+    quantity: number,
+    options?: { privacyFilter?: AutoFollowPrivacyFilter | string },
+  ): Promise<AutoFollowFollowersOfUserResult> {
+    const requested = Math.min(Math.max(1, Math.floor(Number(quantity) || 0)), 100);
+    const privacyFilter = this.normalizeAutoFollowPrivacyFilter(options?.privacyFilter);
+
+    const uname = String(targetUsername || "")
+      .trim()
+      .replace(/^@+/, "");
+    if (!uname) {
+      throw new Error("targetUsername e obrigatorio.");
+    }
+
+    const profileOpenedVia = await this.openTargetProfileBySearchOrDirect(uname);
+    const page = await this.ensureInstagramAuthedPage();
+
+    const targetUserId = await this.resolveUserIdByUsername(uname);
+    const viewerId = await this.getViewerUserIdFromCookie().catch(() => null);
+
+    const results: AutoFollowItemResult[] = [];
+    let followed = 0;
+    let attempted = 0;
+    const seen = new Set<string>();
+    let nextMaxId: string | null = null;
+    const maxListPages = 50;
+    let listPage = 0;
+    const followContext = {
+      containerModule: "profile",
+      navChain: "PolarisProfileSubscribers:followerList:0:miniprofile",
+    };
+
+    listLoop: while (followed < requested && listPage < maxListPages) {
+      const { users, nextMaxId: next, httpError } = await this.fetchFollowersApiPage(
+        page,
+        targetUserId,
+        nextMaxId,
+        50,
+      );
+      if (httpError) {
+        if (results.length === 0) {
+          throw new Error(
+            `Nao foi possivel listar seguidores de @${uname}: ${httpError}. ` +
+              "Perfil privado, bloqueio ou API alterada; veja a documentacao.",
+          );
+        }
+        break listLoop;
+      }
+      if (users.length === 0) {
+        if (listPage === 0) {
+          throw new Error(
+            `Nenhum seguidor listado para @${uname} (ou lista inacessivel).`,
+          );
+        }
+        break listLoop;
+      }
+
+      for (const row of users) {
+        if (followed >= requested) break listLoop;
+        if (seen.has(row.userId)) continue;
+        seen.add(row.userId);
+        if (viewerId && row.userId === viewerId) continue;
+
+        let resolvedPrivacy = typeof row.isPrivate === "boolean" ? row.isPrivate : undefined;
+        if (privacyFilter !== "any" && typeof resolvedPrivacy !== "boolean") {
+          try {
+            const p = await this.resolveUserProfileByUsername(row.username);
+            resolvedPrivacy = p.isPrivate;
+            row.isPrivate = p.isPrivate;
+          } catch {
+            continue;
+          }
+        }
+        if (!this.shouldIncludeByPrivacy({ isPrivate: resolvedPrivacy }, privacyFilter)) {
+          continue;
+        }
+
+        attempted += 1;
+        try {
+          const followResult = await this.postFriendshipCreateInPage(page, row.userId, followContext);
+          const isFollowing = Boolean(followResult.friendshipStatus.following);
+          if (isFollowing) {
+            followed += 1;
+          }
+          results.push({
+            username: row.username,
+            userId: row.userId,
+            isPrivate: resolvedPrivacy,
+            success: isFollowing,
+            following: isFollowing,
+            ...(isFollowing
+              ? {}
+              : { error: followResult.error || "nao foi possivel confirmar follow" }),
+          });
+        } catch (error) {
+          results.push({
+            username: row.username,
+            userId: row.userId,
+            isPrivate: resolvedPrivacy,
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        await sleep(450);
+      }
+
+      listPage += 1;
+      if (!next) {
+        break;
+      }
+      nextMaxId = next;
+    }
+
+    return {
+      targetUsername: uname,
+      targetUserId,
+      profileOpenedVia,
+      requested,
+      attempted,
+      followed,
+      privacyFilter,
+      results,
+    };
   }
 
   public async autoFollowSuggestedUsers(

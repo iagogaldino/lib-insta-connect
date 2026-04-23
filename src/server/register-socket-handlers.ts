@@ -398,6 +398,43 @@ export function registerSocketServer(
     },
     );
 
+    socket.on(
+      "autoFollowFollowers",
+      async (
+        payload:
+          | { sessionId?: string; targetUsername?: string; quantity?: number; privacyFilter?: "any" | "public" | "private" }
+          | undefined,
+      ) => {
+        const resolved = requireContext(payload, "autoFollowFollowers");
+        if (!resolved) return;
+        const targetUsername = String(payload?.targetUsername || "").trim();
+        const quantity = Number(payload?.quantity);
+        const privacyFilter = payload?.privacyFilter;
+        try {
+          if (!targetUsername) {
+            throw new Error("targetUsername e obrigatorio.");
+          }
+          if (!Number.isFinite(quantity) || quantity <= 0) {
+            throw new Error("quantity deve ser maior que zero.");
+          }
+          const result = await resolved.context.client.autoFollowFollowersOfUser(targetUsername, quantity, {
+            privacyFilter,
+          });
+          socket.emit("autoFollowFollowers:result", {
+            ok: true,
+            sessionId: resolved.sessionId,
+            ...result,
+          });
+        } catch (error) {
+          socket.emit("autoFollowFollowers:result", {
+            ok: false,
+            sessionId: resolved.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
+
     socket.on("listConversationsIntercept", async (payload: { sessionId?: string; timeoutMs?: number } | undefined) => {
       const resolved = requireContext(payload, "listConversationsIntercept");
       if (!resolved) return;

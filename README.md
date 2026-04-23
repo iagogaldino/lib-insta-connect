@@ -54,6 +54,7 @@ npm install
 | `npm run socket:client:dev` | CLI interativo (cliente Socket.IO) em TS |
 | `npm run socket:client` | CLI interativo compilado |
 | `npm run build:userscript` | Gera `src/browser/dm-tap.user.js` a partir de `dm-tap.source.ts` (Tampermonkey) |
+| `npm pack` | Gera o tarball `insta-connect-delsuc-<versão>.tgz` no diretório atual (o mesmo conteúdo publicável; executar após `npm run build`) |
 
 Para experimentar a classe `InstaConnect` sem o socket, use o exemplo: `npx ts-node src/example.ts` (ou `npm start` após `npm run build`).
 
@@ -132,6 +133,7 @@ Principais métodos públicos da classe `InstaConnect`:
 - `getSuggestedUsersDataByTargetId(targetId, { limit?, module? })` — busca sugestões via GraphQL chaining (inclui `isPrivate`, `userId`, etc.)
 - `followUserById(userId)` — executa follow via endpoint interno do Instagram
 - `autoFollowSuggestedUsers(quantity, { privacyFilter? })` — segue automaticamente sugestões com filtro `public`/`private`/`any`, tentando bater a meta da quantidade solicitada
+- `autoFollowFollowersOfUser(targetUsername, quantity, { privacyFilter? })` — busca o perfil (mesma lógica que `searchUsers` com match exato; se não achar, acessa a URL `/<username>/`), lista seguidores via API web e segue a quantidade pedida, sem redirecionar para Explore a cada follow
 - `listConversationsByNetworkIntercept(timeoutMs)` — extrai inbox via interceptação de rede (mais robusto que DOM)
 - `sendMessageToConversation(title, text)` — envia uma DM por simulação de teclado (DOM)
 - `openConversationByTitle(title, { dedicatedTab? })` — abre conversa por título; base para o comando socket `openConversation` e o fluxo `mto:` no CLI
@@ -177,6 +179,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `getSuggestedUsersData` | `{ sessionId, targetId, limit?, module? }` | Busca sugestões via GraphQL chaining (`module`: `profile` ou `home`) |
 | `followUser` | `{ sessionId, userId }` | Segue um usuário pelo `userId` numérico |
 | `autoFollowSuggested` | `{ sessionId, quantity, privacyFilter? }` | Auto-follow de sugeridos com filtro (`public`, `private` ou `any`) e tentativa de bater a meta |
+| `autoFollowFollowers` | `{ sessionId, targetUsername, quantity, privacyFilter? }` | Abre o perfil alvo (busca + URL direta se preciso), segue N seguidores desse perfil com o mesmo filtro de privacidade |
 | `listConversationsIntercept` | `{ sessionId, timeoutMs? }` | Lista conversas via interceptação de rede |
 | `debugInboxTraffic` | `{ sessionId, timeoutMs? }` | Snapshot de requests/respostas da inbox |
 | `debugMessageTransport` | `{ sessionId, timeoutMs?, withMessagesOnly? }` | Snapshot de tráfego relacionado a mensagens |
@@ -213,6 +216,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `getSuggestedUsersData:result` | Resposta de `getSuggestedUsersData` |
 | `followUser:result` | Resposta de `followUser` |
 | `autoFollowSuggested:result` | Resposta de `autoFollowSuggested` |
+| `autoFollowFollowers:result` | Resposta de `autoFollowFollowers` (inclui `targetUserId`, `profileOpenedVia`, `results` por seguidor) |
 | `listConversationsIntercept:result` | Resposta de `listConversationsIntercept` |
 | `debugInboxTraffic:result` | Resposta de `debugInboxTraffic` |
 | `debugMessageTransport:result` | Resposta de `debugMessageTransport` |
@@ -259,6 +263,7 @@ listSuggestedPeople [limit]
 getSuggestedUsersData <targetId> [limit]
 followUser <userId>
 autoFollow <quantidade> [public|private|any]
+autoFollowFollowers <targetUsername> <quantidade> [public|private|any]
 autoFollow:<quantidade>  # legado
 listConversationsIntercept [timeoutMs]
 debugInboxTraffic [timeoutMs]
@@ -298,6 +303,15 @@ autoFollow 5 any
 ```
 
 Ao usar filtro (`public`/`private`), a automação ignora sugestões fora do perfil e continua buscando novos candidatos para tentar alcançar a quantidade pedida.
+
+**Seguidores de um perfil específico** (`autoFollowFollowersOfUser` / socket `autoFollowFollowers` / CLI abaixo): localiza o `@targetUsername` pela busca com match exato; se não aparecer na lista, abre `https://www.instagram.com/<username>/`. Obtém a lista de seguidores com `GET /api/v1/friendships/{id}/followers/` (paginado) e aplica o mesmo `privacyFilter` antes de dar follow (sem `goto` em Explore a cada clique, ao contrário de `autoFollow`).
+
+```bash
+autoFollowFollowers smartfit 3 public
+autoFollowFollowers outraconta 2 any
+```
+
+Para empacotar a biblioteca após o build: `npm pack` (ou `npm publish` no registry que usares).
 
 Para testes mínimos só de socket/dmTap, ainda podes usar `scripts/live-dm-tap-client.ts` ou outro cliente Socket.IO.
 
@@ -516,6 +530,7 @@ insta-connect-delsuc/
 - **Tópicos MQTT fora do DM**: o `dmTap` filtra apenas frames que pareçam mensagens diretas. Outras notificações (likes, follows) não são propagadas.
 - **Parser Thrift**: heurístico (sem schema oficial). A maior parte do IG Web atual transmite JSON puro; o fallback Thrift existe por robustez histórica.
 - **Windows + nodemon**: ao editar `src/*.ts` com o socket em dev, o nodemon reinicia o processo Node mas **não** fecha o Chromium. Em casos raros o lock do profile permanece — reinicie o dev server e, se necessário, remova `Singleton*` do profile.
+- **Auto-follow a partir dos seguidores de outro perfil**: perfis privados ou o Instagram a bloquear a API de followers (`403`/`400` ou resposta inesperada) impedem a listagem; a API pública muda e pode exigir ajuste de parâmetros. Filtro `public`/`private` pode precisar de **mais** páginas de listagem se muitas contas forem ignoradas. Uso intenso pode acionar limites de ação da plataforma.
 
 ---
 

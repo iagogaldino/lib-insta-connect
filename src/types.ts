@@ -224,6 +224,18 @@ export interface AutoFollowSuggestedResult {
   results: AutoFollowItemResult[];
 }
 
+export interface AutoFollowFollowersOfUserResult {
+  targetUsername: string;
+  targetUserId: string;
+  /** Como o perfil alvo foi aberto: `search` (resultado exato) ou `direct` (URL direta). */
+  profileOpenedVia: "search" | "direct";
+  requested: number;
+  attempted: number;
+  followed: number;
+  privacyFilter: AutoFollowPrivacyFilter;
+  results: AutoFollowItemResult[];
+}
+
 export interface DmTapEvent {
   url: string;
   topic: string;

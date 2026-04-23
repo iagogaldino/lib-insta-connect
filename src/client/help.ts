@@ -15,6 +15,7 @@ export function printHelp(): void {
   console.log("  getSuggestedUsersData <targetId> [limit]");
   console.log("  followUser <userId>");
   console.log("  autoFollow <quantidade> [public|private|any]");
+  console.log("  autoFollowFollowers <targetUsername> <quantidade> [public|private|any]");
   console.log("  autoFollow:<quantidade> (legado)");
   console.log("  listConversationsIntercept [timeoutMs]");
   console.log("  debugInboxTraffic [timeoutMs]");

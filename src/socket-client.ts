@@ -24,6 +24,7 @@ const sessionRequiredCommands = new Set<string>([
   "getSuggestedUsersData",
   "followUser",
   "autoFollowSuggested",
+  "autoFollowFollowers",
   "listConversationsIntercept",
   "debugInboxTraffic",
   "debugMessageTransport",
@@ -339,6 +340,30 @@ socket.on("autoFollowSuggested:result", (payload) => {
   log("autoFollowSuggested:result", payload);
 });
 
+socket.on("autoFollowFollowers:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok) {
+    console.log(
+      `[auto followers] @${String(data.targetUsername || "")} (targetId=${String(data.targetUserId || "")} via=${String(data.profileOpenedVia || "")}) ` +
+        `requested=${String(data.requested)} attempted=${String(data.attempted)} followed=${String(data.followed)} privacyFilter=${String(data.privacyFilter || "any")}`,
+    );
+    const rows = Array.isArray(data.results) ? data.results : [];
+    for (const row of rows) {
+      const item = toRecord(row);
+      if (!item) continue;
+      const username = String(item.username || "");
+      const userId = String(item.userId || "");
+      const privacy = typeof item.isPrivate === "boolean" ? (item.isPrivate ? "private" : "public") : "unknown";
+      const ok = Boolean(item.success);
+      const error = String(item.error || "").trim();
+      console.log(
+        `  - @${username}${userId ? ` (${userId})` : ""} [${privacy}] => ${ok ? "ok" : `falhou${error ? `: ${error}` : ""}`}`,
+      );
+    }
+  }
+  log("autoFollowFollowers:result", payload);
+});
+
 socket.on("listConversationsIntercept:result", (payload) => {
   log("listConversationsIntercept:result", payload);
 });
@@ -637,6 +662,31 @@ rl.on("line", (line: string) => {
         privacyFilter,
       });
       socket.emit("autoFollowSuggested", { quantity: Math.floor(quantity), privacyFilter });
+    }
+  } else if (command === "autoFollowFollowers") {
+    const targetUsername = String(args[0] || "").trim();
+    const quantity = Number(args[1]);
+    const rawPrivacy = String(args[2] || "any")
+      .trim()
+      .toLowerCase();
+    const privacyFilter =
+      rawPrivacy === "public" || rawPrivacy === "private" || rawPrivacy === "any" ? rawPrivacy : null;
+    if (!targetUsername || !Number.isFinite(quantity) || quantity <= 0 || !privacyFilter) {
+      log("uso invalido", {
+        expected: "autoFollowFollowers <targetUsername> <quantidade> [public|private|any]",
+      });
+    } else {
+      log("enviando comando", {
+        command: "autoFollowFollowers",
+        targetUsername,
+        quantity: Math.floor(quantity),
+        privacyFilter,
+      });
+      socket.emit("autoFollowFollowers", {
+        targetUsername,
+        quantity: Math.floor(quantity),
+        privacyFilter,
+      });
     }
   } else if (command === "createSession") {
     const sessionId = String(args[0] || "").trim();
