@@ -82,7 +82,7 @@ const client = createInstaConnect(
 );
 ```
 
-**Servidor HTTP + Socket.IO (programático):** use `startInstaConnectSocketServer` com `port`, `publicBaseUrl` (URLs de mídia `/voice` e `/image`), `insta?` e opcionalmente `customizeLaunch` e `log`.
+**Servidor HTTP + Socket.IO (programático):** use `startInstaConnectSocketServer` com `port`, `publicBaseUrl` (URLs de mídia por sessão: `/session/:sessionId/voice/:id` e `/session/:sessionId/image/:id`), `insta?` e opcionalmente `customizeLaunch` e `log`.
 
 ```ts
 import { startInstaConnectSocketServer } from "insta-connect-delsuc";
@@ -159,34 +159,40 @@ Assim que um cliente conecta, recebe o evento `status`:
 
 | Comando | Payload | Descrição |
 | --- | --- | --- |
-| `openLogin` | — | Abre a página de login (reutiliza sessão se já logado) |
-| `login` | `{ username, password }` | Faz login com credenciais |
-| `closeBrowser` | — | Encerra o Chromium |
-| `listConversations` | `{ limit? }` | Lista conversas da inbox via DOM |
-| `searchUsers` | `{ query, limit? }` | Busca de usuários; `query` é obrigatório |
-| `listConversationsIntercept` | `{ timeoutMs? }` | Lista conversas via interceptação de rede |
-| `debugInboxTraffic` | `{ timeoutMs? }` | Snapshot de requests/respostas da inbox |
-| `debugMessageTransport` | `{ timeoutMs?, withMessagesOnly? }` | Snapshot de tráfego relacionado a mensagens |
-| `debugInstagramSocket` | `{ timeoutMs?, directOnly? }` | Captura frames dos WebSockets do IG |
-| `probeInstagramRealtime` | `{ timeoutMs? }` | Perfil agregado dos canais realtime do IG |
-| `sendMessage` | `{ conversationTitle, text }` | Envia DM via simulação de teclado |
-| `listMessages` | `{ threadId, limit? }` | Lê mensagens de uma thread |
-| `startMessageListener` | — | Começa a emitir `newMessage` para mensagens em qualquer thread |
-| `stopMessageListener` | — | Para o listener global |
-| `startThreadListener` | `{ threadId }` | Começa a emitir `newMessage` apenas para uma thread |
-| `stopThreadListener` | — | Para o listener de thread |
-| **`startDmTap`** | `{ debug? }` | Liga o interceptador de DMs via MQTT (emite `dmTap:newMessage`) |
-| **`stopDmTap`** | — | Desliga o interceptador |
-| **`getDmTapStats`** | — | Retorna telemetria do parser (frames vistos, payloads JSON, Thrift, erros) |
-| **`openConversation`** | `{ conversationTitle, dedicatedTab?, autoStartDmTap?, preloadMessages? }` | Abre conversa por título; `preloadMessages` tenta anexar últimas mensagens da thread; `autoStartDmTap` liga o tap se ainda inativo. No CLI, o prefixo `mto:` aplica aba dedicada e dmTap automático. |
-| **`resolveVoiceMessage`** | `{ senderUsername? \| voiceSimpleId? \| messageId? }` | Último áudio do usuário ou link por id simples (proxy `GET /voice/:id`) |
-| **`resolveImageMessage`** | `{ senderUsername? \| imageSimpleId? \| messageId? }` | Última imagem do usuário ou link por id simples (proxy `GET /image/:id`) |
+| `createSession` | `{ sessionId? }` | Cria sessão no registry. Se omitido, o servidor gera GUID (`randomUUID`) |
+| `listSessions` | — | Lista sessões ativas no processo |
+| `closeSession` | `{ sessionId }` | Fecha browser/recursos da sessão e remove do registry |
+| `openLogin` | `{ sessionId }` | Abre a página de login da sessão |
+| `login` | `{ sessionId, username, password }` | Faz login com credenciais na sessão |
+| `closeBrowser` | `{ sessionId }` | Encerra o Chromium da sessão |
+| `listConversations` | `{ sessionId, limit? }` | Lista conversas da inbox via DOM |
+| `searchUsers` | `{ sessionId, query, limit? }` | Busca de usuários; `query` é obrigatório |
+| `listConversationsIntercept` | `{ sessionId, timeoutMs? }` | Lista conversas via interceptação de rede |
+| `debugInboxTraffic` | `{ sessionId, timeoutMs? }` | Snapshot de requests/respostas da inbox |
+| `debugMessageTransport` | `{ sessionId, timeoutMs?, withMessagesOnly? }` | Snapshot de tráfego relacionado a mensagens |
+| `debugInstagramSocket` | `{ sessionId, timeoutMs?, directOnly? }` | Captura frames dos WebSockets do IG |
+| `probeInstagramRealtime` | `{ sessionId, timeoutMs? }` | Perfil agregado dos canais realtime do IG |
+| `sendMessage` | `{ sessionId, conversationTitle, text }` | Envia DM via simulação de teclado |
+| `listMessages` | `{ sessionId, threadId, limit? }` | Lê mensagens de uma thread |
+| `startMessageListener` | `{ sessionId }` | Começa a emitir `newMessage` para mensagens em qualquer thread |
+| `stopMessageListener` | `{ sessionId }` | Para o listener global da sessão |
+| `startThreadListener` | `{ sessionId, threadId }` | Começa a emitir `newMessage` apenas para uma thread |
+| `stopThreadListener` | `{ sessionId }` | Para o listener de thread da sessão |
+| **`startDmTap`** | `{ sessionId, debug? }` | Liga o interceptador de DMs via MQTT (emite `dmTap:newMessage`) |
+| **`stopDmTap`** | `{ sessionId }` | Desliga o interceptador |
+| **`getDmTapStats`** | `{ sessionId }` | Retorna telemetria do parser (frames vistos, payloads JSON, Thrift, erros) |
+| **`openConversation`** | `{ sessionId, conversationTitle, dedicatedTab?, autoStartDmTap?, preloadMessages? }` | Abre conversa por título; `preloadMessages` tenta anexar últimas mensagens da thread; `autoStartDmTap` liga o tap se ainda inativo. No CLI, o prefixo `mto:` aplica aba dedicada e dmTap automático. |
+| **`resolveVoiceMessage`** | `{ sessionId, senderUsername? \| voiceSimpleId? \| messageId? }` | Último áudio do usuário ou link por id simples (proxy `GET /session/:sessionId/voice/:id`) |
+| **`resolveImageMessage`** | `{ sessionId, senderUsername? \| imageSimpleId? \| messageId? }` | Última imagem do usuário ou link por id simples (proxy `GET /session/:sessionId/image/:id`) |
 
 ### Eventos emitidos
 
 | Evento | Quando |
 | --- | --- |
 | `status` | Na conexão inicial |
+| `createSession:result` | Resposta de `createSession` |
+| `listSessions:result` | Resposta de `listSessions` |
+| `closeSession:result` | Resposta de `closeSession` |
 | `openLogin:result` | Resposta de `openLogin` |
 | `login:result` | Resposta de `login` |
 | `closeBrowser:result` | Resposta de `closeBrowser` |
@@ -224,6 +230,10 @@ Opcionalmente passe a URL do servidor: `node dist/socket-client.js http://127.0.
 Comandos disponíveis (espelhados em `src/client/help.ts`):
 
 ```
+createSession [sessionId]
+listSessions
+useSession <sessionId>
+closeSession <sessionId>
 openLogin
 login <username> <password>
 listConversations [limit]
@@ -284,13 +294,19 @@ A classe `InstaConnect` recebe esses eventos em Node e repassa via callback ou S
 import { io } from "socket.io-client";
 
 const socket = io("http://localhost:4010", { transports: ["websocket"] });
+let sessionId = "";
 
 socket.on("connect", () => {
-  socket.emit("openLogin");
+  socket.emit("createSession", {}); // sem id => GUID
+});
+
+socket.on("createSession:result", (r) => {
+  sessionId = r.sessionId;
+  socket.emit("openLogin", { sessionId });
 });
 
 socket.on("openLogin:result", () => {
-  socket.emit("startDmTap", { debug: false });
+  socket.emit("startDmTap", { sessionId, debug: false });
 });
 
 socket.on("startDmTap:result", (r) => console.log("dmTap started:", r));
@@ -383,7 +399,7 @@ interface DmTapEvent {
 }
 ```
 
-O servidor HTTP do `socket-server` expõe proxies autenticados (cookies do Chromium): `GET /voice/<id>` (áudio) e `GET /image/<id>` (imagem), com `<id>` numérico. Em deploy remoto, passe `publicBaseUrl` em `startInstaConnectSocketServer` para que os links retornados ao cliente apontem para o host público.
+O servidor HTTP do `socket-server` expõe proxies autenticados (cookies do Chromium): `GET /session/<sessionId>/voice/<id>` (áudio) e `GET /session/<sessionId>/image/<id>` (imagem), com `<id>` numérico. Em deploy remoto, passe `publicBaseUrl` em `startInstaConnectSocketServer` para que os links retornados ao cliente apontem para o host público.
 
 ### Debug e telemetria
 
@@ -409,17 +425,18 @@ Latência típica: **15–25 s** (dominada pelo tempo de navegação/renderizaç
 
 ## Persistência de sessão
 
-- Cookies, localStorage e cache do Chromium são salvos em `insta.sessionDir` (default `.session/chrome-profile`, relativo a `insta.basePath` quando não for absoluto).
-- Isso elimina a necessidade de logar novamente a cada execução.
-- Para múltiplas contas, use `insta.sessionDir` (e/ou `basePath`) distinto por instância.
-- Para limpar completamente a sessão, delete o diretório:
+- No modo Socket server, cada sessão do registry (`sessionId`) ganha paths isolados automaticamente para profile e dedup (`seenMessagesFile`).
+- Se `createSession` vier sem `sessionId`, o servidor gera um GUID (`randomUUID`).
+- Cookies, localStorage e cache do Chromium são salvos em `insta.sessionDir` (default base `.session/chrome-profile`) com namespace por sessão.
+- Isso elimina a necessidade de logar novamente ao recriar a mesma sessão (mesmo `sessionId`).
+- Para limpar completamente uma sessão específica, delete o diretório da sessão:
 
   ```bash
   # Windows (PowerShell)
-  Remove-Item -Recurse -Force .session\chrome-profile
+  Remove-Item -Recurse -Force .session\<sessionId>
 
   # macOS / Linux
-  rm -rf .session/chrome-profile
+  rm -rf .session/<sessionId>
   ```
 
 > Ao matar o processo do Chrome "na marra", pode restar o arquivo de lock `Singleton*` no profile. Se o próximo `launch` falhar com `already running`, remova-o manualmente.

@@ -1,6 +1,10 @@
 export function printHelp(): void {
   console.log("");
   console.log("Comandos disponiveis:");
+  console.log("  createSession [sessionId]");
+  console.log("  listSessions");
+  console.log("  useSession <sessionId>");
+  console.log("  closeSession <sessionId>");
   console.log("  openLogin");
   console.log("  login <username> <password>");
   console.log("  listConversations [limit]");

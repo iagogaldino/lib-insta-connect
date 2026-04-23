@@ -1,11 +1,10 @@
 import type { ServerResponse, IncomingMessage } from "node:http";
-import type { Socket } from "socket.io";
 import type { InstaConnect } from "../insta-connect/InstaConnect";
 import type { DmTapEvent } from "../types";
 
 type MediaRecord = { mediaUrl: string; senderUsername: string | null; createdAt: number };
 
-export function createMediaProxy(client: InstaConnect, publicBaseUrl: string) {
+export function createMediaProxy(client: InstaConnect, publicBaseUrl: string, sessionId: string) {
   const voiceMessages = new Map<string, MediaRecord>();
   const latestVoiceByUser = new Map<string, string>();
   let nextVoiceSimpleId = 1;
@@ -125,7 +124,8 @@ export function createMediaProxy(client: InstaConnect, publicBaseUrl: string) {
   function tryHandleMediaGet(req: IncomingMessage, res: ServerResponse, base: string): boolean {
     const method = req.method || "GET";
     const url = new URL(req.url || "/", base);
-    const voicePrefix = "/voice/";
+    const sessionPrefix = `/session/${encodeURIComponent(sessionId)}`;
+    const voicePrefix = `${sessionPrefix}/voice/`;
     if (method === "GET" && url.pathname.startsWith(voicePrefix)) {
       const routeSegment = decodeURIComponent(url.pathname.slice(voicePrefix.length)).trim();
       void streamVoiceMessage(
@@ -135,7 +135,7 @@ export function createMediaProxy(client: InstaConnect, publicBaseUrl: string) {
       );
       return true;
     }
-    const imagePrefix = "/image/";
+    const imagePrefix = `${sessionPrefix}/image/`;
     if (method === "GET" && url.pathname.startsWith(imagePrefix)) {
       const routeSegment = decodeURIComponent(url.pathname.slice(imagePrefix.length)).trim();
       void streamImageMessage(
@@ -170,7 +170,7 @@ export function createMediaProxy(client: InstaConnect, publicBaseUrl: string) {
       latestVoiceByUser.set(senderUsername, messageId);
     }
 
-    const playbackUrl = `${publicBaseUrl}/voice/${voiceSimpleId}`;
+    const playbackUrl = `${publicBaseUrl}/session/${encodeURIComponent(sessionId)}/voice/${voiceSimpleId}`;
     return { voiceSimpleId, playbackUrl };
   }
 
@@ -201,148 +201,98 @@ export function createMediaProxy(client: InstaConnect, publicBaseUrl: string) {
       latestImageByUser.set(senderUsername, messageId);
     }
 
-    const imageViewUrl = `${publicBaseUrl}/image/${imageSimpleId}`;
+    const imageViewUrl = `${publicBaseUrl}/session/${encodeURIComponent(sessionId)}/image/${imageSimpleId}`;
     return { imageSimpleId, imageViewUrl };
   }
 
-  function registerMediaResolveHandlers(socket: Socket): void {
-    socket.on(
-      "resolveVoiceMessage",
-      (payload: { senderUsername?: string; messageId?: string; voiceSimpleId?: number } | undefined) => {
-        const voiceSimpleIdArg =
-          typeof payload?.voiceSimpleId === "number" && Number.isFinite(payload.voiceSimpleId)
-            ? Math.floor(payload.voiceSimpleId)
-            : null;
-        if (voiceSimpleIdArg !== null) {
-          const messageId = simpleVoiceIdToIgMessageId.get(voiceSimpleIdArg);
-          if (!messageId) {
-            socket.emit("resolveVoiceMessage:result", {
-              ok: false,
-              error: "audio nao encontrado para esse id",
-            });
-            return;
-          }
-          const voice = voiceMessages.get(messageId);
-          if (!voice) {
-            socket.emit("resolveVoiceMessage:result", {
-              ok: false,
-              error: "mensagem de audio expirada ou inexistente",
-            });
-            return;
-          }
-          socket.emit("resolveVoiceMessage:result", {
-            ok: true,
-            messageId,
-            voiceSimpleId: voiceSimpleIdArg,
-            senderUsername: voice.senderUsername,
-            playbackUrl: `${publicBaseUrl}/voice/${voiceSimpleIdArg}`,
-          });
-          return;
-        }
+  function resolveVoiceMessage(payload: {
+    senderUsername?: string;
+    messageId?: string;
+    voiceSimpleId?: number;
+  } | undefined) {
+    const voiceSimpleIdArg =
+      typeof payload?.voiceSimpleId === "number" && Number.isFinite(payload.voiceSimpleId)
+        ? Math.floor(payload.voiceSimpleId)
+        : null;
+    if (voiceSimpleIdArg !== null) {
+      const messageId = simpleVoiceIdToIgMessageId.get(voiceSimpleIdArg);
+      if (!messageId) return { ok: false, error: "audio nao encontrado para esse id" };
+      const voice = voiceMessages.get(messageId);
+      if (!voice) return { ok: false, error: "mensagem de audio expirada ou inexistente" };
+      return {
+        ok: true,
+        messageId,
+        voiceSimpleId: voiceSimpleIdArg,
+        senderUsername: voice.senderUsername,
+        playbackUrl: `${publicBaseUrl}/session/${encodeURIComponent(sessionId)}/voice/${voiceSimpleIdArg}`,
+      };
+    }
 
-        const senderUsername = String(payload?.senderUsername || "").trim().toLowerCase();
-        const explicitMessageId = String(payload?.messageId || "").trim();
-        const messageId =
-          explicitMessageId || (senderUsername ? latestVoiceByUser.get(senderUsername) || "" : "");
-        if (!messageId) {
-          socket.emit("resolveVoiceMessage:result", {
-            ok: false,
-            error: "nenhuma mensagem de audio encontrada para esse usuario",
-          });
-          return;
-        }
-        const voice = voiceMessages.get(messageId);
-        if (!voice) {
-          socket.emit("resolveVoiceMessage:result", {
-            ok: false,
-            error: "mensagem de audio expirada ou inexistente",
-          });
-          return;
-        }
-        const voiceSimpleId = igMessageIdToSimpleVoiceId.get(messageId) ?? null;
-        const playbackPath = voiceSimpleId != null ? String(voiceSimpleId) : encodeURIComponent(messageId);
-        socket.emit("resolveVoiceMessage:result", {
-          ok: true,
-          messageId,
-          voiceSimpleId,
-          senderUsername: voice.senderUsername,
-          playbackUrl: `${publicBaseUrl}/voice/${playbackPath}`,
-        });
-      },
-    );
+    const senderUsername = String(payload?.senderUsername || "").trim().toLowerCase();
+    const explicitMessageId = String(payload?.messageId || "").trim();
+    const messageId = explicitMessageId || (senderUsername ? latestVoiceByUser.get(senderUsername) || "" : "");
+    if (!messageId) return { ok: false, error: "nenhuma mensagem de audio encontrada para esse usuario" };
+    const voice = voiceMessages.get(messageId);
+    if (!voice) return { ok: false, error: "mensagem de audio expirada ou inexistente" };
+    const voiceSimpleId = igMessageIdToSimpleVoiceId.get(messageId) ?? null;
+    const playbackPath = voiceSimpleId != null ? String(voiceSimpleId) : encodeURIComponent(messageId);
+    return {
+      ok: true,
+      messageId,
+      voiceSimpleId,
+      senderUsername: voice.senderUsername,
+      playbackUrl: `${publicBaseUrl}/session/${encodeURIComponent(sessionId)}/voice/${playbackPath}`,
+    };
+  }
 
-    socket.on(
-      "resolveImageMessage",
-      (payload: { senderUsername?: string; messageId?: string; imageSimpleId?: number } | undefined) => {
-        const imageSimpleIdArg =
-          typeof payload?.imageSimpleId === "number" && Number.isFinite(payload.imageSimpleId)
-            ? Math.floor(payload.imageSimpleId)
-            : null;
-        if (imageSimpleIdArg !== null) {
-          const messageId = simpleImageIdToIgMessageId.get(imageSimpleIdArg);
-          if (!messageId) {
-            socket.emit("resolveImageMessage:result", {
-              ok: false,
-              error: "imagem nao encontrada para esse id",
-            });
-            return;
-          }
-          const image = imageMessages.get(messageId);
-          if (!image) {
-            socket.emit("resolveImageMessage:result", {
-              ok: false,
-              error: "imagem expirada ou inexistente",
-            });
-            return;
-          }
-          socket.emit("resolveImageMessage:result", {
-            ok: true,
-            messageId,
-            imageSimpleId: imageSimpleIdArg,
-            senderUsername: image.senderUsername,
-            imageViewUrl: `${publicBaseUrl}/image/${imageSimpleIdArg}`,
-          });
-          return;
-        }
+  function resolveImageMessage(payload: {
+    senderUsername?: string;
+    messageId?: string;
+    imageSimpleId?: number;
+  } | undefined) {
+    const imageSimpleIdArg =
+      typeof payload?.imageSimpleId === "number" && Number.isFinite(payload.imageSimpleId)
+        ? Math.floor(payload.imageSimpleId)
+        : null;
+    if (imageSimpleIdArg !== null) {
+      const messageId = simpleImageIdToIgMessageId.get(imageSimpleIdArg);
+      if (!messageId) return { ok: false, error: "imagem nao encontrada para esse id" };
+      const image = imageMessages.get(messageId);
+      if (!image) return { ok: false, error: "imagem expirada ou inexistente" };
+      return {
+        ok: true,
+        messageId,
+        imageSimpleId: imageSimpleIdArg,
+        senderUsername: image.senderUsername,
+        imageViewUrl: `${publicBaseUrl}/session/${encodeURIComponent(sessionId)}/image/${imageSimpleIdArg}`,
+      };
+    }
 
-        const senderUsername = String(payload?.senderUsername || "").trim().toLowerCase();
-        const explicitMessageId = String(payload?.messageId || "").trim();
-        const messageId =
-          explicitMessageId || (senderUsername ? latestImageByUser.get(senderUsername) || "" : "");
-        if (!messageId) {
-          socket.emit("resolveImageMessage:result", {
-            ok: false,
-            error: "nenhuma imagem encontrada para esse usuario",
-          });
-          return;
-        }
-        const image = imageMessages.get(messageId);
-        if (!image) {
-          socket.emit("resolveImageMessage:result", {
-            ok: false,
-            error: "imagem expirada ou inexistente",
-          });
-          return;
-        }
-        const imageSimpleId = igMessageIdToSimpleImageId.get(messageId) ?? null;
-        const viewPath = imageSimpleId != null ? String(imageSimpleId) : encodeURIComponent(messageId);
-        socket.emit("resolveImageMessage:result", {
-          ok: true,
-          messageId,
-          imageSimpleId,
-          senderUsername: image.senderUsername,
-          imageViewUrl: `${publicBaseUrl}/image/${viewPath}`,
-        });
-      },
-    );
+    const senderUsername = String(payload?.senderUsername || "").trim().toLowerCase();
+    const explicitMessageId = String(payload?.messageId || "").trim();
+    const messageId = explicitMessageId || (senderUsername ? latestImageByUser.get(senderUsername) || "" : "");
+    if (!messageId) return { ok: false, error: "nenhuma imagem encontrada para esse usuario" };
+    const image = imageMessages.get(messageId);
+    if (!image) return { ok: false, error: "imagem expirada ou inexistente" };
+    const imageSimpleId = igMessageIdToSimpleImageId.get(messageId) ?? null;
+    const viewPath = imageSimpleId != null ? String(imageSimpleId) : encodeURIComponent(messageId);
+    return {
+      ok: true,
+      messageId,
+      imageSimpleId,
+      senderUsername: image.senderUsername,
+      imageViewUrl: `${publicBaseUrl}/session/${encodeURIComponent(sessionId)}/image/${viewPath}`,
+    };
   }
 
   return {
+    sessionId,
     publicBaseUrl,
     tryHandleMediaGet: (req: IncomingMessage, res: ServerResponse) => tryHandleMediaGet(req, res, publicBaseUrl),
     rememberVoiceEvent,
     rememberImageEvent,
-    registerMediaResolveHandlers,
+    resolveVoiceMessage,
+    resolveImageMessage,
   };
 }
 

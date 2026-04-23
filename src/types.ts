@@ -38,6 +38,19 @@ export interface InstaConnectSocketServerConfig {
   log?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
+export interface SessionPayload {
+  sessionId: string;
+}
+
+export interface CreateSessionPayload {
+  sessionId?: string;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  createdAt: string;
+}
+
 export interface LoginResult {
   success: boolean;
   url: string;

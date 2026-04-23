@@ -6,9 +6,54 @@ import { printHelp, printMessageModeHelp } from "./client/help";
 const serverUrl = process.argv[2] || "http://localhost:4010";
 const serverConnectionInfo = parseServerConnectionInfo(serverUrl);
 let messageModeTarget: string | null = null;
+let activeSessionId: string | null = null;
+let waitingAutoSession = false;
 const socket: Socket = io(serverUrl, {
   transports: ["websocket"],
 });
+
+const sessionRequiredCommands = new Set<string>([
+  "openLogin",
+  "login",
+  "closeBrowser",
+  "listConversations",
+  "searchUsers",
+  "listConversationsIntercept",
+  "debugInboxTraffic",
+  "debugMessageTransport",
+  "debugInstagramSocket",
+  "probeInstagramRealtime",
+  "openConversation",
+  "sendMessage",
+  "listMessages",
+  "startMessageListener",
+  "stopMessageListener",
+  "startThreadListener",
+  "stopThreadListener",
+  "startDmTap",
+  "stopDmTap",
+  "getDmTapStats",
+  "resolveVoiceMessage",
+  "resolveImageMessage",
+]);
+const originalEmit = socket.emit.bind(socket);
+(socket as unknown as { emit: (event: string, payload?: unknown) => Socket }).emit = ((
+  event: string,
+  payload?: unknown,
+) => {
+  if (!sessionRequiredCommands.has(event)) {
+    return originalEmit(event, payload);
+  }
+  if (!activeSessionId) {
+    log("nenhuma sessao ativa. Use createSession/useSession antes.");
+    return socket;
+  }
+  const data = toRecord(payload) ?? {};
+  return originalEmit(event, {
+    ...data,
+    sessionId: activeSessionId,
+  });
+}) as unknown as Socket["emit"];
 
 function log(message: string, meta?: unknown): void {
   if (messageModeTarget) {
@@ -55,6 +100,8 @@ socket.on("connect", () => {
     socketId: socket.id,
   });
   printHelp();
+  waitingAutoSession = true;
+  originalEmit("createSession", {});
 });
 
 socket.on("connect_error", (error) => {
@@ -72,6 +119,42 @@ socket.on("disconnect", (reason) => {
 
 socket.on("status", (payload) => {
   log("status recebido", payload);
+});
+
+socket.on("createSession:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok && typeof data.sessionId === "string") {
+    if (waitingAutoSession || !activeSessionId) {
+      activeSessionId = data.sessionId;
+      log("sessao ativa", { sessionId: activeSessionId });
+    }
+    waitingAutoSession = false;
+  }
+  log("createSession:result", payload);
+});
+
+socket.on("listSessions:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok && Array.isArray(data.sessions)) {
+    console.log("Sessoes:");
+    for (const raw of data.sessions) {
+      const s = toRecord(raw);
+      if (!s) continue;
+      const sid = String(s.sessionId || "");
+      const marker = sid && sid === activeSessionId ? " *ativa" : "";
+      console.log(`  - ${sid}${marker}`);
+    }
+  }
+  log("listSessions:result", payload);
+});
+
+socket.on("closeSession:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok && activeSessionId && String(data.sessionId || "") === activeSessionId) {
+    activeSessionId = null;
+    log("sessao ativa encerrada");
+  }
+  log("closeSession:result", payload);
 });
 
 socket.on("openLogin:result", (payload) => {
@@ -382,6 +465,30 @@ rl.on("line", (line: string) => {
         preloadMessages: true,
       });
       printMessageModeHelp(targetUsername);
+    }
+  } else if (command === "createSession") {
+    const sessionId = String(args[0] || "").trim();
+    waitingAutoSession = true;
+    log("enviando comando", { command: "createSession", sessionId: sessionId || "(auto)" });
+    originalEmit("createSession", sessionId ? { sessionId } : {});
+  } else if (command === "listSessions") {
+    log("enviando comando", { command: "listSessions" });
+    originalEmit("listSessions", {});
+  } else if (command === "useSession") {
+    const sessionId = String(args[0] || "").trim();
+    if (!sessionId) {
+      log("uso invalido", { expected: "useSession <sessionId>" });
+    } else {
+      activeSessionId = sessionId;
+      log("sessao ativa alterada", { sessionId });
+    }
+  } else if (command === "closeSession") {
+    const sessionId = String(args[0] || "").trim();
+    if (!sessionId) {
+      log("uso invalido", { expected: "closeSession <sessionId>" });
+    } else {
+      log("enviando comando", { command: "closeSession", sessionId });
+      originalEmit("closeSession", { sessionId });
     }
   } else if (command === "openLogin") {
     log("enviando comando", { command: "openLogin" });
