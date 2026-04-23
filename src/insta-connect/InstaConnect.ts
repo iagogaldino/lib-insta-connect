@@ -313,15 +313,26 @@ export class InstaConnect {
     }
 
     const currentUrl = page.url();
-    const hasChallengeUrl =
-      currentUrl.includes("/challenge/") ||
-      currentUrl.includes("/accounts/login/two_factor") ||
-      currentUrl.includes("/accounts/two_factor");
-    const type: "security_code" | "two_factor" | "unknown" = currentUrl.includes("two_factor")
+    const normalizedUrl = currentUrl.toLowerCase();
+    const hasTwoFactorUrl =
+      normalizedUrl.includes("/accounts/login/two_factor") || normalizedUrl.includes("/accounts/two_factor");
+    const hasChallengeUrl = normalizedUrl.includes("/challenge/") || hasTwoFactorUrl;
+    const type: "security_code" | "two_factor" | "unknown" = hasTwoFactorUrl
       ? "two_factor"
       : hasChallengeUrl
         ? "security_code"
         : "unknown";
+
+    // Em rotas de challenge/2FA a flag precisa ser verdadeira, mesmo que o DOM
+    // ainda nao tenha carregado os inputs/labels quando a checagem ocorrer.
+    if (hasChallengeUrl) {
+      return {
+        required: true,
+        type,
+        message:
+          "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.",
+      };
+    }
 
     const hasCodeInput =
       Boolean(await page.$('input[name="verificationCode"]')) ||
@@ -358,6 +369,7 @@ export class InstaConnect {
 
   private async resolveLoginResult(defaultMessage?: string): Promise<LoginResult> {
     const currentUrl = this.page!.url();
+    const normalizedUrl = currentUrl.toLowerCase();
     const challenge = await this.detectLoginChallenge();
     if (challenge.required) {
       return {
@@ -368,6 +380,21 @@ export class InstaConnect {
         message: challenge.message || defaultMessage,
       };
     }
+    const looksLikeChallengeUrl =
+      normalizedUrl.includes("/challenge/") ||
+      normalizedUrl.includes("/accounts/login/two_factor") ||
+      normalizedUrl.includes("/accounts/two_factor");
+    if (looksLikeChallengeUrl) {
+      return {
+        success: false,
+        url: currentUrl,
+        challengeRequired: true,
+        challengeType: normalizedUrl.includes("two_factor") ? "two_factor" : "security_code",
+        message:
+          defaultMessage || "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.",
+      };
+    }
+
     const onHome =
       currentUrl.includes("instagram.com") &&
       !currentUrl.includes("/accounts/login") &&
