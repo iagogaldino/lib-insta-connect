@@ -127,6 +127,10 @@ Principais métodos públicos da classe `InstaConnect`:
 - `close()` — encerra o browser
 - `listConversations(limit)` — scraping DOM da inbox
 - `searchUsers(query, { limit? })` — busca de contas combinando respostas de rede (JSON) e links no DOM; requer sessão autenticada
+- `listSuggestedPeople({ limit? })` — lista sugestões de usuários em `https://www.instagram.com/explore/people/`
+- `getSuggestedUsersDataByTargetId(targetId, { limit?, module? })` — busca sugestões via GraphQL chaining (inclui `isPrivate`, `userId`, etc.)
+- `followUserById(userId)` — executa follow via endpoint interno do Instagram
+- `autoFollowSuggestedUsers(quantity, { privacyFilter? })` — segue automaticamente sugestões com filtro `public`/`private`/`any`, tentando bater a meta da quantidade solicitada
 - `listConversationsByNetworkIntercept(timeoutMs)` — extrai inbox via interceptação de rede (mais robusto que DOM)
 - `sendMessageToConversation(title, text)` — envia uma DM por simulação de teclado (DOM)
 - `openConversationByTitle(title, { dedicatedTab? })` — abre conversa por título; base para o comando socket `openConversation` e o fluxo `mto:` no CLI
@@ -167,6 +171,10 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `closeBrowser` | `{ sessionId }` | Encerra o Chromium da sessão |
 | `listConversations` | `{ sessionId, limit? }` | Lista conversas da inbox via DOM |
 | `searchUsers` | `{ sessionId, query, limit? }` | Busca de usuários; `query` é obrigatório |
+| `listSuggestedPeople` | `{ sessionId, limit? }` | Lista usuários sugeridos da página Explore People |
+| `getSuggestedUsersData` | `{ sessionId, targetId, limit?, module? }` | Busca sugestões via GraphQL chaining (`module`: `profile` ou `home`) |
+| `followUser` | `{ sessionId, userId }` | Segue um usuário pelo `userId` numérico |
+| `autoFollowSuggested` | `{ sessionId, quantity, privacyFilter? }` | Auto-follow de sugeridos com filtro (`public`, `private` ou `any`) e tentativa de bater a meta |
 | `listConversationsIntercept` | `{ sessionId, timeoutMs? }` | Lista conversas via interceptação de rede |
 | `debugInboxTraffic` | `{ sessionId, timeoutMs? }` | Snapshot de requests/respostas da inbox |
 | `debugMessageTransport` | `{ sessionId, timeoutMs?, withMessagesOnly? }` | Snapshot de tráfego relacionado a mensagens |
@@ -198,6 +206,10 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `closeBrowser:result` | Resposta de `closeBrowser` |
 | `listConversations:result` | Resposta de `listConversations` |
 | `searchUsers:result` | Resposta de `searchUsers` |
+| `listSuggestedPeople:result` | Resposta de `listSuggestedPeople` |
+| `getSuggestedUsersData:result` | Resposta de `getSuggestedUsersData` |
+| `followUser:result` | Resposta de `followUser` |
+| `autoFollowSuggested:result` | Resposta de `autoFollowSuggested` |
 | `listConversationsIntercept:result` | Resposta de `listConversationsIntercept` |
 | `debugInboxTraffic:result` | Resposta de `debugInboxTraffic` |
 | `debugMessageTransport:result` | Resposta de `debugMessageTransport` |
@@ -238,6 +250,11 @@ openLogin
 login <username> <password>
 listConversations [limit]
 searchUsers <query> [limit]
+listSuggestedPeople [limit]
+getSuggestedUsersData <targetId> [limit]
+followUser <userId>
+autoFollow <quantidade> [public|private|any]
+autoFollow:<quantidade>  # legado
 listConversationsIntercept [timeoutMs]
 debugInboxTraffic [timeoutMs]
 debugMessageTransport [timeoutMs]
@@ -264,6 +281,16 @@ exit
 ```
 
 Com o prefixo `mto:` (ex.: `mto:contaamiga`), o CLI abre a conversa em aba dedicada, pode iniciar o `dmTap` e entra no modo de envio (mensagem livre + atalhos `/audio`, `/foto`, etc. — ver `printMessageModeHelp` no mesmo ficheiro).
+
+Exemplos de auto-follow por filtro:
+
+```bash
+autoFollow 3 public
+autoFollow 2 private
+autoFollow 5 any
+```
+
+Ao usar filtro (`public`/`private`), a automação ignora sugestões fora do perfil e continua buscando novos candidatos para tentar alcançar a quantidade pedida.
 
 Para testes mínimos só de socket/dmTap, ainda podes usar `scripts/live-dm-tap-client.ts` ou outro cliente Socket.IO.
 

@@ -6,7 +6,7 @@ import { printHelp, printMessageModeHelp } from "./client/help";
 const serverUrl = process.argv[2] || "http://localhost:4010";
 const serverConnectionInfo = parseServerConnectionInfo(serverUrl);
 let messageModeTarget: string | null = null;
-let activeSessionId: string | null = null;
+let activeSessionId: string | null = "ec3cf1d5-af25-4234-8e4b-927fa96d79fc";
 let waitingAutoSession = false;
 const socket: Socket = io(serverUrl, {
   transports: ["websocket"],
@@ -18,6 +18,10 @@ const sessionRequiredCommands = new Set<string>([
   "closeBrowser",
   "listConversations",
   "searchUsers",
+  "listSuggestedPeople",
+  "getSuggestedUsersData",
+  "followUser",
+  "autoFollowSuggested",
   "listConversationsIntercept",
   "debugInboxTraffic",
   "debugMessageTransport",
@@ -100,8 +104,13 @@ socket.on("connect", () => {
     socketId: socket.id,
   });
   printHelp();
-  waitingAutoSession = true;
-  originalEmit("createSession", {});
+  if (activeSessionId) {
+    waitingAutoSession = true;
+    originalEmit("createSession", { sessionId: activeSessionId });
+  } else {
+    waitingAutoSession = true;
+    originalEmit("createSession", {});
+  }
 });
 
 socket.on("connect_error", (error) => {
@@ -207,6 +216,90 @@ socket.on("searchUsers:result", (payload) => {
     }
   }
   log("searchUsers:result", payload);
+});
+
+socket.on("listSuggestedPeople:result", (payload) => {
+  const data = toRecord(payload);
+  if (data && data.ok) {
+    const users = data.users;
+    if (Array.isArray(users) && users.length > 0) {
+      for (const u of users) {
+        const o = toRecord(u);
+        if (!o) continue;
+        const un = String(o.username ?? "");
+        const fn = String(o.fullName ?? "").trim();
+        const href = String(o.href ?? "");
+        const reason = String(o.reason ?? "").trim();
+        const v = o.isVerified ? " [v]" : "";
+        const detail = [fn, reason].filter(Boolean).join(" | ");
+        console.log(`  @${un}${v}${detail ? ` | ${detail}` : ""} ${href}`);
+      }
+    } else {
+      console.log("  (nenhuma sugestao retornada)");
+    }
+  }
+  log("listSuggestedPeople:result", payload);
+});
+
+socket.on("getSuggestedUsersData:result", (payload) => {
+  const data = toRecord(payload);
+  if (data && data.ok) {
+    const users = data.users;
+    if (Array.isArray(users) && users.length > 0) {
+      for (const u of users) {
+        const o = toRecord(u);
+        if (!o) continue;
+        const userId = String(o.userId ?? "");
+        const un = String(o.username ?? "");
+        const fn = String(o.fullName ?? "").trim();
+        const isPrivate = Boolean(o.isPrivate);
+        const isVerified = Boolean(o.isVerified);
+        const social = String(o.reason ?? "").trim();
+        const flags = `${isVerified ? " [v]" : ""}${isPrivate ? " [private]" : ""}`;
+        const meta = [fn, social].filter(Boolean).join(" | ");
+        console.log(`  ${userId} @${un}${flags}${meta ? ` | ${meta}` : ""}`);
+      }
+    } else {
+      console.log("  (nenhum usuario retornado)");
+    }
+  }
+  log("getSuggestedUsersData:result", payload);
+});
+
+socket.on("followUser:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok) {
+    const userId = String(data.userId || "");
+    const following = Boolean(toRecord(data.friendshipStatus)?.following);
+    const prev = data.previousFollowing;
+    console.log(
+      `[followUser] userId=${userId} following=${following} previousFollowing=${String(prev)}`,
+    );
+  }
+  log("followUser:result", payload);
+});
+
+socket.on("autoFollowSuggested:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok) {
+    console.log(
+      `[auto] requested=${String(data.requested)} attempted=${String(data.attempted)} followed=${String(data.followed)} privacyFilter=${String(data.privacyFilter || "any")}`,
+    );
+    const rows = Array.isArray(data.results) ? data.results : [];
+    for (const row of rows) {
+      const item = toRecord(row);
+      if (!item) continue;
+      const username = String(item.username || "");
+      const userId = String(item.userId || "");
+      const privacy = typeof item.isPrivate === "boolean" ? (item.isPrivate ? "private" : "public") : "unknown";
+      const ok = Boolean(item.success);
+      const error = String(item.error || "").trim();
+      console.log(
+        `  - @${username}${userId ? ` (${userId})` : ""} [${privacy}] => ${ok ? "ok" : `falhou${error ? `: ${error}` : ""}`}`,
+      );
+    }
+  }
+  log("autoFollowSuggested:result", payload);
 });
 
 socket.on("listConversationsIntercept:result", (payload) => {
@@ -466,6 +559,32 @@ rl.on("line", (line: string) => {
       });
       printMessageModeHelp(targetUsername);
     }
+  } else if (command.startsWith("autoFollow:")) {
+    const rawQty = command.slice("autoFollow:".length).trim();
+    const quantity = Number(rawQty);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      log("uso invalido", { expected: "autoFollow:<quantidade>" });
+    } else {
+      log("enviando comando", { command: "autoFollowSuggested", quantity: Math.floor(quantity) });
+      socket.emit("autoFollowSuggested", { quantity: Math.floor(quantity) });
+    }
+  } else if (command === "autoFollow") {
+    const quantity = Number(args[0]);
+    const rawPrivacy = String(args[1] || "any")
+      .trim()
+      .toLowerCase();
+    const privacyFilter =
+      rawPrivacy === "public" || rawPrivacy === "private" || rawPrivacy === "any" ? rawPrivacy : null;
+    if (!Number.isFinite(quantity) || quantity <= 0 || !privacyFilter) {
+      log("uso invalido", { expected: "autoFollow <quantidade> [public|private|any]" });
+    } else {
+      log("enviando comando", {
+        command: "autoFollowSuggested",
+        quantity: Math.floor(quantity),
+        privacyFilter,
+      });
+      socket.emit("autoFollowSuggested", { quantity: Math.floor(quantity), privacyFilter });
+    }
   } else if (command === "createSession") {
     const sessionId = String(args[0] || "").trim();
     waitingAutoSession = true;
@@ -528,6 +647,31 @@ rl.on("line", (line: string) => {
         log("enviando comando", { command: "searchUsers", query, limit: limit ?? "default" });
         socket.emit("searchUsers", { query, limit });
       }
+    }
+  } else if (command === "listSuggestedPeople") {
+    const limit = args[0] ? Number(args[0]) : undefined;
+    log("enviando comando", { command: "listSuggestedPeople", limit: limit ?? "default" });
+    socket.emit("listSuggestedPeople", { limit });
+  } else if (command === "getSuggestedUsersData") {
+    const targetId = String(args[0] || "").trim();
+    const limit = args[1] ? Number(args[1]) : undefined;
+    if (!targetId) {
+      log("uso invalido", { expected: "getSuggestedUsersData <targetId> [limit]" });
+    } else {
+      log("enviando comando", {
+        command: "getSuggestedUsersData",
+        targetId,
+        limit: limit ?? "default",
+      });
+      socket.emit("getSuggestedUsersData", { targetId, limit });
+    }
+  } else if (command === "followUser") {
+    const userId = String(args[0] || "").trim();
+    if (!userId) {
+      log("uso invalido", { expected: "followUser <userId>" });
+    } else {
+      log("enviando comando", { command: "followUser", userId });
+      socket.emit("followUser", { userId });
     }
   } else if (command === "listConversationsIntercept") {
     const timeoutMs = args[0] ? Number(args[0]) : 25000;

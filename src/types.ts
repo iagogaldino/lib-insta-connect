@@ -160,6 +160,59 @@ export interface InstagramSearchUser {
   isVerified?: boolean;
 }
 
+export interface InstagramSuggestedUser {
+  username: string;
+  fullName: string;
+  href: string;
+  userId?: string;
+  reason?: string;
+  isVerified?: boolean;
+  isPrivate?: boolean;
+  profilePicUrl?: string;
+}
+
+export interface InstagramFriendshipStatus {
+  following: boolean;
+  is_bestie?: boolean;
+  is_feed_favorite?: boolean;
+  is_private?: boolean;
+  is_restricted?: boolean;
+  incoming_request?: boolean;
+  outgoing_request?: boolean;
+  followed_by?: boolean;
+  muting?: boolean;
+  blocking?: boolean;
+  is_eligible_to_subscribe?: boolean;
+  subscribed?: boolean;
+}
+
+export interface FollowUserResult {
+  userId: string;
+  previousFollowing?: boolean;
+  friendshipStatus: InstagramFriendshipStatus;
+  status: string;
+  error?: string | null;
+}
+
+export interface AutoFollowItemResult {
+  username: string;
+  userId?: string;
+  isPrivate?: boolean;
+  success: boolean;
+  following?: boolean;
+  error?: string;
+}
+
+export type AutoFollowPrivacyFilter = "any" | "public" | "private";
+
+export interface AutoFollowSuggestedResult {
+  requested: number;
+  attempted: number;
+  followed: number;
+  privacyFilter: AutoFollowPrivacyFilter;
+  results: AutoFollowItemResult[];
+}
+
 export interface DmTapEvent {
   url: string;
   topic: string;

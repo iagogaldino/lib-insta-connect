@@ -245,6 +245,112 @@ export function registerSocketServer(
       }
     });
 
+    socket.on("listSuggestedPeople", async (payload: { sessionId?: string; limit?: number } | undefined) => {
+      const resolved = requireContext(payload, "listSuggestedPeople");
+      if (!resolved) return;
+      const limit = Number(payload?.limit);
+      try {
+        const result = await resolved.context.client.listSuggestedPeople({
+          limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        });
+        socket.emit("listSuggestedPeople:result", {
+          ok: true,
+          sessionId: resolved.sessionId,
+          count: result.users.length,
+          ...result,
+        });
+      } catch (error) {
+        socket.emit("listSuggestedPeople:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    socket.on(
+      "getSuggestedUsersData",
+      async (payload: { sessionId?: string; targetId?: string; limit?: number; module?: "profile" | "home" } | undefined) => {
+        const resolved = requireContext(payload, "getSuggestedUsersData");
+        if (!resolved) return;
+        const targetId = String(payload?.targetId || "").trim();
+        const limit = Number(payload?.limit);
+        try {
+          if (!targetId) {
+            throw new Error("targetId e obrigatorio.");
+          }
+          const result = await resolved.context.client.getSuggestedUsersDataByTargetId(targetId, {
+            limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+            module: payload?.module,
+          });
+          socket.emit("getSuggestedUsersData:result", {
+            ok: true,
+            sessionId: resolved.sessionId,
+            count: result.users.length,
+            ...result,
+          });
+        } catch (error) {
+          socket.emit("getSuggestedUsersData:result", {
+            ok: false,
+            sessionId: resolved.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
+
+    socket.on("followUser", async (payload: { sessionId?: string; userId?: string } | undefined) => {
+      const resolved = requireContext(payload, "followUser");
+      if (!resolved) return;
+      const userId = String(payload?.userId || "").trim();
+      try {
+        if (!userId) {
+          throw new Error("userId e obrigatorio.");
+        }
+        const result = await resolved.context.client.followUserById(userId);
+        socket.emit("followUser:result", {
+          ok: true,
+          sessionId: resolved.sessionId,
+          ...result,
+        });
+      } catch (error) {
+        socket.emit("followUser:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    socket.on(
+      "autoFollowSuggested",
+      async (payload: { sessionId?: string; quantity?: number; privacyFilter?: "any" | "public" | "private" } | undefined) => {
+      const resolved = requireContext(payload, "autoFollowSuggested");
+      if (!resolved) return;
+      const quantity = Number(payload?.quantity);
+      const privacyFilter = payload?.privacyFilter;
+      try {
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          throw new Error("quantity deve ser maior que zero.");
+        }
+        const result = await resolved.context.client.autoFollowSuggestedUsers(quantity, {
+          privacyFilter,
+        });
+        socket.emit("autoFollowSuggested:result", {
+          ok: true,
+          sessionId: resolved.sessionId,
+          ...result,
+        });
+      } catch (error) {
+        socket.emit("autoFollowSuggested:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    );
+
     socket.on("listConversationsIntercept", async (payload: { sessionId?: string; timeoutMs?: number } | undefined) => {
       const resolved = requireContext(payload, "listConversationsIntercept");
       if (!resolved) return;
