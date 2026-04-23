@@ -298,6 +298,241 @@ export class InstaConnect {
     }
   }
 
+  private async detectLoginChallenge(): Promise<{
+    required: boolean;
+    type: "security_code" | "two_factor" | "unknown";
+    message: string;
+  }> {
+    const page = this.page;
+    if (!page) {
+      return {
+        required: false,
+        type: "unknown",
+        message: "",
+      };
+    }
+
+    const currentUrl = page.url();
+    const hasChallengeUrl =
+      currentUrl.includes("/challenge/") ||
+      currentUrl.includes("/accounts/login/two_factor") ||
+      currentUrl.includes("/accounts/two_factor");
+    const type: "security_code" | "two_factor" | "unknown" = currentUrl.includes("two_factor")
+      ? "two_factor"
+      : hasChallengeUrl
+        ? "security_code"
+        : "unknown";
+
+    const hasCodeInput =
+      Boolean(await page.$('input[name="verificationCode"]')) ||
+      Boolean(await page.$('input[name="security_code"]')) ||
+      Boolean(await page.$('input[autocomplete="one-time-code"]')) ||
+      Boolean(await page.$('input[inputmode="numeric"]')) ||
+      Boolean(await page.$('input[type="tel"]'));
+    const hasCodePrompt = await page.evaluate(() => {
+      const text = (document.body?.innerText || "").toLowerCase();
+      return (
+        text.includes("security code") ||
+        text.includes("two-factor") ||
+        text.includes("two factor") ||
+        text.includes("código de segurança") ||
+        text.includes("codigo de seguranca")
+      );
+    });
+
+    if (!hasChallengeUrl && !hasCodeInput && !hasCodePrompt) {
+      return {
+        required: false,
+        type: "unknown",
+        message: "",
+      };
+    }
+
+    return {
+      required: true,
+      type,
+      message:
+        "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.",
+    };
+  }
+
+  private async resolveLoginResult(defaultMessage?: string): Promise<LoginResult> {
+    const currentUrl = this.page!.url();
+    const challenge = await this.detectLoginChallenge();
+    if (challenge.required) {
+      return {
+        success: false,
+        url: currentUrl,
+        challengeRequired: true,
+        challengeType: challenge.type,
+        message: challenge.message || defaultMessage,
+      };
+    }
+    const onHome =
+      currentUrl.includes("instagram.com") &&
+      !currentUrl.includes("/accounts/login") &&
+      !currentUrl.includes("/challenge/");
+    return {
+      success: onHome,
+      url: currentUrl,
+      ...(defaultMessage ? { message: defaultMessage } : {}),
+    };
+  }
+
+  private async fillSecurityCodeInput(code: string): Promise<boolean> {
+    const selectors = [
+      'input[name="verificationCode"]',
+      'input[name="security_code"]',
+      'input[autocomplete="one-time-code"]',
+      'input[inputmode="numeric"]',
+      'input[type="tel"]',
+      'form input[type="text"]',
+    ];
+    for (const selector of selectors) {
+      const input = await this.page!.$(selector);
+      if (!input) continue;
+      await input.click({ clickCount: 3 }).catch(() => null);
+      await this.page!.keyboard.press("Backspace").catch(() => null);
+      await input.type(code, { delay: 20 }).catch(() => null);
+      return true;
+    }
+
+    return this.page!.evaluate((value) => {
+      const xpaths = [
+        '//*[@id="mount_0_0_5g"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[2]/div',
+        '//*[@id="mount_0_0_5g"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[1]/div/label/input',
+      ];
+      const setValue = (node: Element | null): boolean => {
+        if (!node) return false;
+        const input =
+          (node instanceof HTMLInputElement ? node : node.querySelector("input")) || null;
+        if (!input) return false;
+        input.focus();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        return true;
+      };
+      for (const xpath of xpaths) {
+        const found = document.evaluate(
+          xpath,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null,
+        ).singleNodeValue as Element | null;
+        if (setValue(found)) return true;
+      }
+      return false;
+    }, code);
+  }
+
+  private async clickSecurityCodeConfirm(): Promise<boolean> {
+    // Prioriza o botao de confirmacao DENTRO do form do codigo.
+    const clickedInsideVerificationForm = await this.page!.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('input[name="verificationCode"]');
+      const form = input?.closest("form") || null;
+      if (!form) return false;
+
+      const candidates = Array.from(
+        form.querySelectorAll<HTMLElement>('button[type="submit"], button, div[role="button"], a[role="button"]'),
+      );
+
+      for (const el of candidates) {
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (text === "confirm" || text === "confirmar") {
+          el.click();
+          return true;
+        }
+      }
+      for (const el of candidates) {
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (text.includes("confirm") || text.includes("confirmar")) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    if (clickedInsideVerificationForm) {
+      return true;
+    }
+
+    const selectors = [
+      // seletor mais estavel do HTML enviado
+      'input[name="verificationCode"]',
+      'div[role="button"][tabindex="0"]',
+      'button[type="submit"]',
+      "form button",
+      'form div[role="button"]',
+      'button[aria-label*="Confirm" i]',
+      'button[aria-label*="Confirmar" i]',
+    ];
+    for (const selector of selectors) {
+      if (selector === 'input[name="verificationCode"]') {
+        // ancora no input do codigo e clica no confirm dentro do mesmo form
+        const clicked = await this.page!.evaluate(() => {
+          const input = document.querySelector<HTMLInputElement>('input[name="verificationCode"]');
+          const form = input?.closest("form") || null;
+          if (!form) return false;
+          const action = Array.from(
+            form.querySelectorAll<HTMLElement>('div[role="button"], button[type="submit"], button'),
+          ).find((el) => {
+            const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+            return text === "confirm" || text === "confirmar";
+          });
+          if (!action) return false;
+          action.click();
+          return true;
+        });
+        if (clicked) return true;
+        continue;
+      }
+      const button = await this.page!.$(selector);
+      if (!button) continue;
+      await button.click().catch(() => null);
+      return true;
+    }
+
+    const clickedByExactText = await this.clickFirstActionByText(["confirm", "confirmar"]);
+    if (clickedByExactText) {
+      return true;
+    }
+
+    const clickedByContainsText = await this.page!.evaluate(() => {
+      const candidates = Array.from(
+        document.querySelectorAll("button, div[role='button'], a[role='button']"),
+      ) as HTMLElement[];
+      for (const el of candidates) {
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!text) continue;
+        if (text.includes("confirm") || text.includes("confirmar")) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    if (clickedByContainsText) {
+      return true;
+    }
+
+    return (
+      (await this.clickXPathIfExists(
+        '//*[@id="mount_0_0_AQ"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[2]/div',
+      )) ||
+      (await this.clickXPathIfExists(
+        '//*[@id="mount_0_0_EA"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[2]/div',
+      )) ||
+      (await this.clickXPathIfExists(
+        '//*[@id="mount_0_0_5g"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[1]/div/label/input',
+      )) ||
+      (await this.clickXPathIfExists(
+        '//*[@id="mount_0_0_5g"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[2]/div',
+      ))
+    );
+  }
+
   public async login(username: string, password: string): Promise<LoginResult> {
     const loginUrl = await this.openLoginPage();
     const alreadyLogged = !loginUrl.includes("/accounts/login");
@@ -360,15 +595,39 @@ export class InstaConnect {
 
     await this.handlePostLoginPrompts();
 
-    const currentUrl = this.page!.url();
-    const onHome =
-      currentUrl.includes("instagram.com") &&
-      !currentUrl.includes("/accounts/login") &&
-      !currentUrl.includes("/challenge/");
-    return {
-      success: onHome,
-      url: currentUrl,
-    };
+    return this.resolveLoginResult();
+  }
+
+  public async submitSecurityCode(code: string): Promise<LoginResult> {
+    if (!this.page) {
+      await this.launch();
+    }
+    const normalized = String(code || "").trim();
+    if (!normalized) {
+      throw new Error("code e obrigatorio.");
+    }
+
+    const challenge = await this.detectLoginChallenge();
+    if (!challenge.required) {
+      return this.resolveLoginResult("Nenhum desafio de codigo ativo nesta sessao.");
+    }
+
+    const filled = await this.fillSecurityCodeInput(normalized);
+    if (!filled) {
+      throw new Error("Campo de codigo de seguranca nao encontrado.");
+    }
+
+    const clicked = await this.clickSecurityCodeConfirm();
+    if (!clicked) {
+      throw new Error("Botao de confirmacao do codigo nao encontrado.");
+    }
+
+    await this.page!
+      .waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 })
+      .catch(() => null);
+    await sleep(1200);
+    await this.handlePostLoginPrompts().catch(() => null);
+    return this.resolveLoginResult();
   }
 
   public async listConversations(limit = 20): Promise<ConversationSummary[]> {

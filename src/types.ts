@@ -54,6 +54,9 @@ export interface SessionSummary {
 export interface LoginResult {
   success: boolean;
   url: string;
+  challengeRequired?: boolean;
+  challengeType?: "security_code" | "two_factor" | "unknown";
+  message?: string;
 }
 
 export interface ConversationSummary {

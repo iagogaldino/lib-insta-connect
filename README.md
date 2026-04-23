@@ -123,7 +123,8 @@ Principais métodos públicos da classe `InstaConnect`:
 
 - `launch()` — sobe o Chromium com o perfil persistido
 - `openLoginPage()` — navega para a tela de login
-- `login(username, password)` — faz login e persiste cookies no profile
+- `login(username, password)` — faz login; se cair em challenge retorna `challengeRequired: true`
+- `submitSecurityCode(code)` — envia o código de segurança/2FA quando o login entra em challenge
 - `close()` — encerra o browser
 - `listConversations(limit)` — scraping DOM da inbox
 - `searchUsers(query, { limit? })` — busca de contas combinando respostas de rede (JSON) e links no DOM; requer sessão autenticada
@@ -168,6 +169,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `closeSession` | `{ sessionId }` | Fecha browser/recursos da sessão e remove do registry |
 | `openLogin` | `{ sessionId }` | Abre a página de login da sessão |
 | `login` | `{ sessionId, username, password }` | Faz login com credenciais na sessão |
+| `submitSecurityCode` | `{ sessionId, code }` | Envia o código de segurança quando o login entrar em challenge |
 | `closeBrowser` | `{ sessionId }` | Encerra o Chromium da sessão |
 | `listConversations` | `{ sessionId, limit? }` | Lista conversas da inbox via DOM |
 | `searchUsers` | `{ sessionId, query, limit? }` | Busca de usuários; `query` é obrigatório |
@@ -203,6 +205,7 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `closeSession:result` | Resposta de `closeSession` |
 | `openLogin:result` | Resposta de `openLogin` |
 | `login:result` | Resposta de `login` |
+| `submitSecurityCode:result` | Resposta de `submitSecurityCode` |
 | `closeBrowser:result` | Resposta de `closeBrowser` |
 | `listConversations:result` | Resposta de `listConversations` |
 | `searchUsers:result` | Resposta de `searchUsers` |
@@ -248,6 +251,8 @@ useSession <sessionId>
 closeSession <sessionId>
 openLogin
 login <username> <password>
+submitSecurityCode <codigo>
+cancel2fa
 listConversations [limit]
 searchUsers <query> [limit]
 listSuggestedPeople [limit]
@@ -281,6 +286,8 @@ exit
 ```
 
 Com o prefixo `mto:` (ex.: `mto:contaamiga`), o CLI abre a conversa em aba dedicada, pode iniciar o `dmTap` e entra no modo de envio (mensagem livre + atalhos `/audio`, `/foto`, etc. — ver `printMessageModeHelp` no mesmo ficheiro).
+
+No fluxo de login, se `login` retornar challenge (`challengeRequired: true`), o CLI entra no prompt `2fa>` para você digitar o código recebido. Também é possível enviar manualmente com `submitSecurityCode <codigo>` e sair desse modo com `cancel2fa`.
 
 Exemplos de auto-follow por filtro:
 
@@ -505,7 +512,7 @@ insta-connect-delsuc/
 ## Limitações conhecidas
 
 - **Envio rápido via API interna**: desabilitado. O IG Web usa GraphQL mutations com tokens voláteis; manter isso estável exige re-engenharia contínua.
-- **Cloudflare / 2FA / checkpoints**: não tratados automaticamente. Use `headless: false` para resolver manualmente quando aparecer desafio.
+- **Cloudflare / checkpoints avançados**: não tratados automaticamente. Para challenge de código (`security code` / `two_factor`), a lib agora suporta envio assistido via `submitSecurityCode`, mas desafios adicionais podem exigir intervenção manual.
 - **Tópicos MQTT fora do DM**: o `dmTap` filtra apenas frames que pareçam mensagens diretas. Outras notificações (likes, follows) não são propagadas.
 - **Parser Thrift**: heurístico (sem schema oficial). A maior parte do IG Web atual transmite JSON puro; o fallback Thrift existe por robustez histórica.
 - **Windows + nodemon**: ao editar `src/*.ts` com o socket em dev, o nodemon reinicia o processo Node mas **não** fecha o Chromium. Em casos raros o lock do profile permanece — reinicie o dev server e, se necessário, remova `Singleton*` do profile.

@@ -7,6 +7,8 @@ export function printHelp(): void {
   console.log("  closeSession <sessionId>");
   console.log("  openLogin");
   console.log("  login <username> <password>");
+  console.log("  submitSecurityCode <codigo>");
+  console.log("  cancel2fa");
   console.log("  listConversations [limit]");
   console.log("  searchUsers <query> [limit]");
   console.log("  listSuggestedPeople [limit]");

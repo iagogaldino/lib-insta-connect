@@ -8,6 +8,7 @@ const serverConnectionInfo = parseServerConnectionInfo(serverUrl);
 let messageModeTarget: string | null = null;
 let activeSessionId: string | null = "ec3cf1d5-af25-4234-8e4b-927fa96d79fc";
 let waitingAutoSession = false;
+let waitingSecurityCode = false;
 const socket: Socket = io(serverUrl, {
   transports: ["websocket"],
 });
@@ -15,6 +16,7 @@ const socket: Socket = io(serverUrl, {
 const sessionRequiredCommands = new Set<string>([
   "openLogin",
   "login",
+  "submitSecurityCode",
   "closeBrowser",
   "listConversations",
   "searchUsers",
@@ -171,7 +173,42 @@ socket.on("openLogin:result", (payload) => {
 });
 
 socket.on("login:result", (payload) => {
+  const data = toRecord(payload);
+  const challengeRequired = Boolean(data?.challengeRequired);
+  if (data?.ok && challengeRequired) {
+    waitingSecurityCode = true;
+    rl.setPrompt("2fa> ");
+    const challengeType = String(data?.challengeType || "security_code");
+    const challengeMessage = String(
+      data?.message || "Codigo de seguranca necessario. Digite o codigo e pressione Enter.",
+    );
+    console.log(`[2FA] ${challengeMessage} (tipo: ${challengeType})`);
+    rl.prompt(true);
+  } else if (data?.ok && waitingSecurityCode) {
+    waitingSecurityCode = false;
+    rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
+  }
   log("login:result", payload);
+});
+
+socket.on("submitSecurityCode:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok) {
+    const challengeRequired = Boolean(data.challengeRequired);
+    if (challengeRequired) {
+      waitingSecurityCode = true;
+      rl.setPrompt("2fa> ");
+      console.log(
+        `[2FA] Codigo recebido, mas o Instagram ainda pede verificacao. Tente novamente.`,
+      );
+    } else {
+      waitingSecurityCode = false;
+      rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
+      console.log("[2FA] Codigo confirmado com sucesso.");
+    }
+    rl.prompt(true);
+  }
+  log("submitSecurityCode:result", payload);
 });
 
 socket.on("closeBrowser:result", (payload) => {
@@ -498,6 +535,22 @@ rl.on("line", (line: string) => {
     return;
   }
 
+  if (waitingSecurityCode) {
+    if (input === "cancel2fa" || input === "/cancel2fa") {
+      waitingSecurityCode = false;
+      rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
+      log("modo de codigo de seguranca encerrado");
+      rl.prompt();
+      return;
+    }
+    if (!input.startsWith("submitSecurityCode ")) {
+      log("enviando comando", { command: "submitSecurityCode" });
+      socket.emit("submitSecurityCode", { code: input });
+      rl.prompt();
+      return;
+    }
+  }
+
   const [command, ...args] = input.split(" ");
 
   if (messageModeTarget) {
@@ -620,6 +673,14 @@ rl.on("line", (line: string) => {
     } else {
       log("enviando comando", { command: "login", username });
       socket.emit("login", { username, password });
+    }
+  } else if (command === "submitSecurityCode") {
+    const code = args.join(" ").trim();
+    if (!code) {
+      log("uso invalido", { expected: "submitSecurityCode <codigo>" });
+    } else {
+      log("enviando comando", { command: "submitSecurityCode" });
+      socket.emit("submitSecurityCode", { code });
     }
   } else if (command === "closeBrowser") {
     log("enviando comando", { command: "closeBrowser" });

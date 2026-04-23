@@ -178,6 +178,30 @@ export function registerSocketServer(
       }
     });
 
+    socket.on("submitSecurityCode", async (payload: { sessionId?: string; code?: string } | undefined) => {
+      const resolved = requireContext(payload, "submitSecurityCode");
+      if (!resolved) return;
+      try {
+        const code = String(payload?.code || "").trim();
+        if (!code) {
+          socket.emit("submitSecurityCode:result", {
+            ok: false,
+            sessionId: resolved.sessionId,
+            error: "code e obrigatorio",
+          });
+          return;
+        }
+        const result = await resolved.context.client.submitSecurityCode(code);
+        socket.emit("submitSecurityCode:result", { ok: true, sessionId: resolved.sessionId, ...result });
+      } catch (error) {
+        socket.emit("submitSecurityCode:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
     socket.on(
       "resolveVoiceMessage",
       (payload: { sessionId?: string; senderUsername?: string; messageId?: string; voiceSimpleId?: number } | undefined) => {
