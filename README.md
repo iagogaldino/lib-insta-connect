@@ -42,6 +42,8 @@ cd lib-insta-connect
 npm install
 ```
 
+Em outro projeto, como dependência npm: `npm install insta-connect-delsuc@^0.1.4`. O método `autoFollowFollowersOfUser` está incluído a partir da versão **0.1.4**.
+
 ## Scripts NPM
 
 | Script | Descrição |
@@ -143,6 +145,8 @@ Principais métodos públicos da classe `InstaConnect`:
 - **`startDmTap(onMessage, onDebug?)` / `stopDmTap()` / `isDmTapActive()` / `getDmTapStats()`** — interceptação direta do WebSocket MQTT do IG (ver [DM Tap](#dm-tap--interceptação-de-mensagens-em-tempo-real))
 - `getInstagramMediaAuthHeaders()` — cabeçalhos de autenticação para o proxy de mídia (cookies/sessão)
 - `debugInboxTraffic(timeoutMs)` / `debugMessageTransport(timeoutMs)` / `debugInstagramSocket(timeoutMs)` / `probeInstagramRealtime(timeoutMs)` — helpers de diagnóstico de tráfego
+
+**Integração HTTP/REST:** em um backend próprio, você pode expor rotas (por exemplo `POST` com JSON) que reutilizam a mesma instância de `InstaConnect` (sessão com login já feito) e chamam `autoFollowFollowersOfUser`, `autoFollowSuggestedUsers` ou outros métodos, com validação e limites no seu serviço — o contrato fica a cargo da aplicação.
 
 ---
 
