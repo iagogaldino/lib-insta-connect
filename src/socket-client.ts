@@ -1,10 +1,9 @@
-import "dotenv/config";
 import readline from "node:readline";
 import { io, Socket } from "socket.io-client";
 import { formatDmTapMessage, toRecord } from "./client/dm-tap-format";
 import { printHelp, printMessageModeHelp } from "./client/help";
 
-const serverUrl = process.env.SOCKET_URL || "http://localhost:4010";
+const serverUrl = process.argv[2] || "http://localhost:4010";
 const serverConnectionInfo = parseServerConnectionInfo(serverUrl);
 let messageModeTarget: string | null = null;
 const socket: Socket = io(serverUrl, {

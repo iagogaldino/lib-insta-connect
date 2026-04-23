@@ -9,7 +9,7 @@ Biblioteca TypeScript/Node.js para automação do Instagram Web via Puppeteer, c
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Scripts NPM](#scripts-npm)
-- [Configuração por variáveis de ambiente](#configuração-por-variáveis-de-ambiente)
+- [Configuração em código](#configuração-em-código)
 - [Uso rápido como biblioteca](#uso-rápido-como-biblioteca)
 - [Servidor Socket.IO em tempo real](#servidor-socketio-em-tempo-real)
   - [Comandos aceitos](#comandos-aceitos)
@@ -49,7 +49,7 @@ npm install
 | `npm run dev` | Sobe o servidor Socket.IO em modo dev: nodemon + `ts-node` conforme `nodemon.json` (por padrão `src/socket-server.ts`; mesma intenção de `socket:dev`) |
 | `npm run build` | Compila TypeScript para `dist/` |
 | `npm start` | Roda `dist/example.js` (exemplo compilado) |
-| `npm run socket:dev` | Sobe o servidor Socket.IO em modo dev (TS + nodemon) — porta em `PORT` (default `4010`) |
+| `npm run socket:dev` | Sobe o servidor Socket.IO em modo dev (TS + nodemon); por padrão porta **4010** (ou `node dist/socket-server.js <porta> <publicBaseUrl>`) |
 | `npm run socket` | Roda o servidor Socket.IO compilado |
 | `npm run socket:client:dev` | CLI interativo (cliente Socket.IO) em TS |
 | `npm run socket:client` | CLI interativo compilado |
@@ -57,37 +57,56 @@ npm install
 
 Para experimentar a classe `InstaConnect` sem o socket, use o exemplo: `npx ts-node src/example.ts` (ou `npm start` após `npm run build`).
 
-## Configuração por variáveis de ambiente
+## Configuração em código
 
-| Variável | Default | Função |
+A biblioteca **não** lê `.env` nem `process.env` para caminhos do browser ou defaults do `InstaConnect`. Quem integra passa um objeto `InstaConnectConfig` (e, se quiser, uma função que ajusta o `puppeteer.launch`).
+
+| Campo em `InstaConnectConfig` | Padrão | Função |
 | --- | --- | --- |
-| `PORT` | `4010` | Porta HTTP do `socket-server` (Socket.IO + proxy `/voice` e `/image`). |
-| `PUBLIC_BASE_URL` | `http://localhost:<PORT>` | Base pública usada nas URLs de mídia retornadas ao cliente; em deploy atrás de domínio, aponte para a URL acessível de fora. |
-| `SESSION_DIR` | `.session/chrome-profile` | Diretório do perfil do Chromium (cookies, localStorage). Alterar permite múltiplas contas. |
-| `SEEN_MESSAGES_FILE` | `.session/seen-message-ids.json` | Cache LRU de `messageId`s já emitidos pelo `dmTap` (deduplicação entre reinicializações). |
-| `SOCKET_URL` | `http://localhost:4010` | URL usada pelo cliente CLI e pelos scripts de exemplo para conectar no socket-server (alinhada a `PORT` se você mudar a porta). |
-| `INSTA_HEADLESS` | `false` | Define se o Chromium roda em headless (`true`) ou visível (`false`). |
-| `INSTA_VIEWPORT_WIDTH` / `INSTA_VIEWPORT_HEIGHT` | efetivo **1024**×**600** se omitidos (com clamp) | Viewport “desktop” do Chromium. Largura nunca fica abaixo de 1024 nem altura abaixo de 600, para evitar layout mobile. |
-| `DM_TAP_DEBUG` | `0` | Quando `1`, habilita o canal `dmTap:debug` no live client de exemplo. |
+| `basePath` | `process.cwd()` | Base para resolver `sessionDir` e `seenMessagesFile` quando forem relativos. |
+| `sessionDir` | `.session/chrome-profile` | Perfil do Chromium (cookies, localStorage). Vários `basePath` + `sessionDir` distintos = várias contas. |
+| `seenMessagesFile` | `.session/seen-message-ids.json` | Cache de `messageId` do `dmTap` (deduplicação entre reinícios). |
+| `headless` | `false` se `LaunchOptions.headless` não for passado | Modo headless; `headless` em `new InstaConnect({ headless: true, insta: {...} })` tem prioridade. |
+| `viewportWidth` / `viewportHeight` | efetivo **1000**×**600** (com clamp) | Viewport “desktop”. Largura mín. efetiva 1024, altura mín. 600, para evitar layout mobile. |
 
-Exemplo:
+Ajuste fino do Puppeteer: segundo argumento do construtor, ou o tipo `InstaConnectLaunchCustomize` — recebe o `LaunchOptions` já resolvido e devolve o objeto final (ex.: acrescentar `--no-sandbox` em `args`).
 
-```bash
-SESSION_DIR=.session/conta-secundaria npm run socket:dev
+**Uso mínimo (factory):**
+
+```ts
+import { createInstaConnect } from "insta-connect-delsuc";
+
+const client = createInstaConnect(
+  { basePath: process.cwd(), headless: true },
+  (launch) => ({ ...launch, slowMo: 50 }),
+);
 ```
 
-```bash
-INSTA_HEADLESS=true npm run socket:dev
+**Servidor HTTP + Socket.IO (programático):** use `startInstaConnectSocketServer` com `port`, `publicBaseUrl` (URLs de mídia `/voice` e `/image`), `insta?` e opcionalmente `customizeLaunch` e `log`.
+
+```ts
+import { startInstaConnectSocketServer } from "insta-connect-delsuc";
+
+startInstaConnectSocketServer({
+  port: 4010,
+  publicBaseUrl: "https://seu-servidor.com",
+  insta: { sessionDir: ".session/conta-1" },
+});
 ```
+
+**CLI do repositório (dev):** o executável `dist/socket-server.js` usa argumentos de linha de comando, não `.env`: `node dist/socket-server.js [porta] [publicBaseUrl]`. O **cliente** CLI: `node dist/socket-client.js [url]` (default `http://localhost:4010`). Em scripts próprios, carregue `.env` na **sua** aplicação e mapeie para `InstaConnectConfig` / `startInstaConnectSocketServer` se quiser.
 
 ---
 
 ## Uso rápido como biblioteca
 
 ```ts
-import { InstaConnect } from "insta-connect-delsuc"; // re-exporta `./src/insta-connect/InstaConnect` e tipos em `./src/types`
+import { InstaConnect } from "insta-connect-delsuc"; // tipos em `types`, `createInstaConnect` e `startInstaConnectSocketServer` no barrel
 
-const client = new InstaConnect({ headless: false });
+const client = new InstaConnect({
+  headless: false,
+  insta: { basePath: process.cwd() },
+});
 
 await client.openLoginPage();
 await client.login("seu_usuario", "sua_senha");
@@ -122,13 +141,13 @@ Principais métodos públicos da classe `InstaConnect`:
 
 ## Servidor Socket.IO em tempo real
 
-Suba o servidor:
+Em um projeto integrador, chame `startInstaConnectSocketServer` (ver [Configuração em código](#configuração-em-código)). Para testar **este** repositório:
 
 ```bash
 npm run socket:dev
 ```
 
-Endpoint: `http://localhost:<PORT>` com Socket.IO (ex.: `ws://localhost:4010` se `PORT=4010`, transporte típico `websocket`).
+Endpoint: `http://localhost:<porta>` com Socket.IO (ex.: `ws://localhost:4010`, transporte típico `websocket`). A porta padrão do binário é **4010**; para outra: `node dist/socket-server.js 5000 http://localhost:5000`.
 
 Assim que um cliente conecta, recebe o evento `status`:
 
@@ -194,11 +213,13 @@ Assim que um cliente conecta, recebe o evento `status`:
 
 ## Cliente CLI interativo
 
-Em um segundo terminal:
+Em um segundo terminal (com o servidor já no ar):
 
 ```bash
 npm run socket:client:dev
 ```
+
+Opcionalmente passe a URL do servidor: `node dist/socket-client.js http://127.0.0.1:5000`.
 
 Comandos disponíveis (espelhados em `src/client/help.ts`):
 
@@ -301,7 +322,7 @@ npx ts-node --transpile-only scripts/live-dm-tap-client.ts
 ```ts
 import { InstaConnect } from "./src/index";
 
-const client = new InstaConnect({ headless: false });
+const client = new InstaConnect({ headless: false, insta: { basePath: process.cwd() } });
 await client.openLoginPage();
 
 await client.startDmTap(
@@ -362,13 +383,13 @@ interface DmTapEvent {
 }
 ```
 
-O servidor HTTP do `socket-server` expõe proxies autenticados (cookies do Chromium): `GET /voice/<id>` (áudio) e `GET /image/<id>` (imagem), com `<id>` numérico. Em deploy remoto, defina `PUBLIC_BASE_URL` para que os links retornados ao cliente apontem para o host público.
+O servidor HTTP do `socket-server` expõe proxies autenticados (cookies do Chromium): `GET /voice/<id>` (áudio) e `GET /image/<id>` (imagem), com `<id>` numérico. Em deploy remoto, passe `publicBaseUrl` em `startInstaConnectSocketServer` para que os links retornados ao cliente apontem para o host público.
 
 ### Debug e telemetria
 
 - `getDmTapStats()` retorna um objeto com contadores globais: total de frames, `publishFrames`, `jsonOk`, `thriftOk`, `parseErrors`, `emitted`, `dedupHits`, etc.
 - `dmTap:debug` (opt-in) emite eventos ricos para cada frame (cabeçalho MQTT, topic, tamanho do payload, razão de descarte). **Não ligue em produção** — pode gerar centenas de eventos por minuto.
-- O LRU de `messageId` é persistido em `SEEN_MESSAGES_FILE` para sobreviver a restart do processo.
+- O LRU de `messageId` é persistido em `insta.seenMessagesFile` (default `.session/seen-message-ids.json` relativo a `basePath`) para sobreviver a restart do processo.
 
 ---
 
@@ -388,9 +409,9 @@ Latência típica: **15–25 s** (dominada pelo tempo de navegação/renderizaç
 
 ## Persistência de sessão
 
-- Cookies, localStorage e cache do Chromium são salvos em `SESSION_DIR` (default `.session/chrome-profile`).
+- Cookies, localStorage e cache do Chromium são salvos em `insta.sessionDir` (default `.session/chrome-profile`, relativo a `insta.basePath` quando não for absoluto).
 - Isso elimina a necessidade de logar novamente a cada execução.
-- Para múltiplas contas, use `SESSION_DIR` distinto por instância.
+- Para múltiplas contas, use `insta.sessionDir` (e/ou `basePath`) distinto por instância.
 - Para limpar completamente a sessão, delete o diretório:
 
   ```bash
@@ -410,11 +431,11 @@ Latência típica: **15–25 s** (dominada pelo tempo de navegação/renderizaç
 ```
 insta-connect-delsuc/
 ├── src/
-│   ├── index.ts                    # Re-export: tipos + InstaConnect
+│   ├── index.ts                    # Re-export: tipos, InstaConnect, createInstaConnect, startInstaConnectSocketServer
 │   ├── types.ts
 │   ├── example.ts
-│   ├── socket-server.ts            # HTTP + Socket.IO; usa `PORT` e `PUBLIC_BASE_URL`
-│   ├── socket-client.ts            # CLI interativo
+│   ├── socket-server.ts            # HTTP + Socket.IO; `startInstaConnectSocketServer` + CLI por argv
+│   ├── socket-client.ts            # CLI interativo (URL via argv)
 │   ├── insta-connect/
 │   │   └── InstaConnect.ts
 │   ├── server/
@@ -423,7 +444,7 @@ insta-connect-delsuc/
 │   ├── client/
 │   │   ├── help.ts
 │   │   └── dm-tap-format.ts
-│   ├── lib/                        # utilitários (env, parse, etc.)
+│   ├── lib/                        # utilitários (parse, websocket, etc.)
 │   └── browser/
 │       ├── dm-tap.source.ts
 │       └── dm-tap.user.js

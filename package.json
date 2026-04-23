@@ -1,6 +1,6 @@
 {
   "name": "insta-connect-delsuc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Biblioteca para automacao de interacoes com Instagram via Puppeteer",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -36,7 +36,6 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "dotenv": "^17.2.3",
     "puppeteer": "^24.6.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"

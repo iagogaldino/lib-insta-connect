@@ -1,2 +1,3 @@
 ﻿export * from "./types";
-export { InstaConnect } from "./insta-connect/InstaConnect";
+export { InstaConnect, createInstaConnect } from "./insta-connect/InstaConnect";
+export { startInstaConnectSocketServer } from "./socket-server";

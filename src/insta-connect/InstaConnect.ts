@@ -1,8 +1,7 @@
-﻿import puppeteer, { Browser, Page } from "puppeteer";
+﻿import puppeteer, { Browser, type LaunchOptions, Page } from "puppeteer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DM_TAP_SOURCE } from "../browser/dm-tap.source";
-import { parseBooleanEnv } from "../lib/env";
 import { parseMessagesFromPayload } from "../lib/parse-messages-from-payload";
 import { sleep } from "../lib/sleep";
 import { decodeWebsocketPayload, isMessageTransportUrl } from "../lib/websocket-payload";
@@ -11,8 +10,10 @@ import type { HTTPResponse } from "puppeteer";
 import type {
   ConversationSummary,
   DmTapEvent,
-  IncomingMessageEvent,
+  InstaConnectConfig,
+  InstaConnectLaunchCustomize,
   InstaConnectOptions,
+  IncomingMessageEvent,
   InstagramSearchUser,
   InterceptedConversation,
   InstagramSocketFrameRecord,
@@ -26,7 +27,8 @@ import type {
 } from "../types";
 
 export class InstaConnect {
-  private options: InstaConnectOptions;
+  private instaConfig: InstaConnectConfig & { basePath: string };
+  private options: LaunchOptions;
   private sessionDir: string;
   private browser: Browser | null = null;
   private page: Page | null = null;
@@ -48,8 +50,8 @@ export class InstaConnect {
 
   /** Instagram troca para layout "mobile" em viewports estreitas; o padrao e desktop. */
   private getDesktopViewport() {
-    const rawW = Number(process.env.INSTA_VIEWPORT_WIDTH);
-    const rawH = Number(process.env.INSTA_VIEWPORT_HEIGHT);
+    const rawW = Number(this.instaConfig.viewportWidth);
+    const rawH = Number(this.instaConfig.viewportHeight);
     const w = Math.min(3840, Math.max(1024, Number.isFinite(rawW) && rawW > 0 ? Math.floor(rawW) : 1000));
     const h = Math.min(2160, Math.max(600, Number.isFinite(rawH) && rawH > 0 ? Math.floor(rawH) : 600));
     return { width: w, height: h, deviceScaleFactor: 1, isMobile: false, hasTouch: false } as const;
@@ -63,23 +65,45 @@ export class InstaConnect {
     }
   }
 
-  constructor(options: InstaConnectOptions = {}) {
+  constructor(
+    options: InstaConnectOptions = {},
+    customizeLaunch?: InstaConnectLaunchCustomize,
+  ) {
+    const { insta, args: userArgs, defaultViewport: userViewport, headless: headlessFromLaunch, ...rest } =
+      options;
+    this.instaConfig = {
+      basePath: insta?.basePath ?? process.cwd(),
+      sessionDir: insta?.sessionDir,
+      seenMessagesFile: insta?.seenMessagesFile,
+      viewportWidth: insta?.viewportWidth,
+      viewportHeight: insta?.viewportHeight,
+      headless: insta?.headless,
+    };
     this.sessionDir = path.resolve(
-      process.cwd(),
-      process.env.SESSION_DIR || ".session/chrome-profile",
+      this.instaConfig.basePath,
+      this.instaConfig.sessionDir || ".session/chrome-profile",
     );
-    const { args: userArgs, defaultViewport: userViewport, ...rest } = options;
     const vp = this.getDesktopViewport();
-    this.options = {
-      headless: parseBooleanEnv(process.env.INSTA_HEADLESS, false),
+    const headless: LaunchOptions["headless"] =
+      headlessFromLaunch !== undefined
+        ? headlessFromLaunch
+        : this.instaConfig.headless !== undefined
+          ? this.instaConfig.headless
+          : false;
+    let launch: LaunchOptions = {
+      headless,
       userDataDir: this.sessionDir,
       defaultViewport: userViewport !== undefined ? userViewport : { ...vp },
       args: [`--window-size=${vp.width},${vp.height}`, ...(Array.isArray(userArgs) ? userArgs : [])],
       ...rest,
     };
+    if (customizeLaunch) {
+      launch = customizeLaunch(launch);
+    }
+    this.options = launch;
     this.seenStorePath = path.resolve(
-      process.cwd(),
-      process.env.SEEN_MESSAGES_FILE || ".session/seen-message-ids.json",
+      this.instaConfig.basePath,
+      this.instaConfig.seenMessagesFile || ".session/seen-message-ids.json",
     );
   }
 
@@ -2106,4 +2130,15 @@ export class InstaConnect {
       accept: "*/*",
     };
   }
+}
+
+/**
+ * Cria o cliente com `InstaConnectConfig` e, opcionalmente, ajusta o `LaunchOptions` do Puppeteer
+ * (equivalente a `new InstaConnect({ insta }, customizeLaunch)`).
+ */
+export function createInstaConnect(
+  insta: InstaConnectConfig,
+  customizeLaunch?: InstaConnectLaunchCustomize,
+): InstaConnect {
+  return new InstaConnect({ insta }, customizeLaunch);
 }

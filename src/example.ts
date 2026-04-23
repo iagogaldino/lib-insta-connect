@@ -1,8 +1,9 @@
-import "dotenv/config";
-import { InstaConnect } from "./index";
+import { createInstaConnect } from "./index";
 
 async function main(): Promise<void> {
-  const client = new InstaConnect();
+  const client = createInstaConnect(
+    { basePath: process.cwd() },
+  );
   try {
     const currentUrl = await client.openLoginPage();
     console.log("Instagram login aberto em:", currentUrl);

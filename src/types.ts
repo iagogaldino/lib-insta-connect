@@ -1,6 +1,42 @@
 import type { LaunchOptions } from "puppeteer";
 
-export interface InstaConnectOptions extends LaunchOptions {}
+/** Configuracao de caminhos e defaults do `InstaConnect` (passe a partir da app integradora, sem .env). */
+export interface InstaConnectConfig {
+  /** Diretório base para resolver `sessionDir` e `seenMessagesFile` relativos. Padrão: `process.cwd()`. */
+  basePath?: string;
+  /** Perfil do Chrome: caminho absoluto ou relativo a `basePath`. Padrão: `.session/chrome-profile`. */
+  sessionDir?: string;
+  /** Arquivo de persistência de IDs de mensagens já vistas. Padrão: `.session/seen-message-ids.json`. */
+  seenMessagesFile?: string;
+  /** Largura do viewport em px (layout desktop do Instagram). Padrão: 1000. */
+  viewportWidth?: number;
+  /** Altura do viewport em px. Padrão: 600. */
+  viewportHeight?: number;
+  /**
+   * `headless` do Puppeteer quando `LaunchOptions.headless` não for informado.
+   * Padrão: `false`.
+   */
+  headless?: boolean;
+}
+
+export type InstaConnectLaunchCustomize = (launch: LaunchOptions) => LaunchOptions;
+
+export interface InstaConnectOptions extends LaunchOptions {
+  insta?: InstaConnectConfig;
+}
+
+/** Inicia o servidor HTTP + Socket.IO que expõe o `InstaConnect` (sem leitura de .env). */
+export interface InstaConnectSocketServerConfig {
+  port: number;
+  /** URL pública usada em links de mídia (ex.: `http://seu-servidor:4010`). */
+  publicBaseUrl: string;
+  /** Padrão: `{}` (caminhos relativos a `process.cwd()`). */
+  insta?: InstaConnectConfig;
+  /** Ajusta as opções finais do `puppeteer.launch` (args, `slowMo`, etc.). */
+  customizeLaunch?: InstaConnectLaunchCustomize;
+  /** Opcional: substitui o `console.log` interno. */
+  log?: (message: string, meta?: Record<string, unknown>) => void;
+}
 
 export interface LoginResult {
   success: boolean;
