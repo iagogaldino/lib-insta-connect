@@ -41,6 +41,10 @@ export function printHelp(): void {
   console.log("  help");
   console.log("  exit");
   console.log("");
+  console.log(
+    "Variavel de ambiente (novas sessoes): INSTA_HEADLESS=true|false|1|0 (omitir = headless ligado por padrao na lib).",
+  );
+  console.log("");
 }
 
 export function printMessageModeHelp(targetUsername: string): void {

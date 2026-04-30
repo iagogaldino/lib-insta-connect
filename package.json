@@ -36,6 +36,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^16.4.5",
     "puppeteer": "^24.6.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"

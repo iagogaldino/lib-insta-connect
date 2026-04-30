@@ -95,7 +95,7 @@ export class InstaConnect {
         ? headlessFromLaunch
         : this.instaConfig.headless !== undefined
           ? this.instaConfig.headless
-          : false;
+          : true;
     let launch: LaunchOptions = {
       headless,
       userDataDir: this.sessionDir,

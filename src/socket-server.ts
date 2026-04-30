@@ -60,13 +60,20 @@ export function startInstaConnectSocketServer(
     return candidate;
   };
 
-  const createSession = (sessionId?: string) => {
+  const createSession = (sessionId?: string, createOpts?: { headless?: boolean }) => {
     const id = String(sessionId || "").trim() || nextSessionId();
     const existing = sessions.get(id);
     if (existing) {
       return { sessionId: id, created: false, context: existing };
     }
-    const client = new InstaConnect({ insta: ensureDefaultSessionPaths(id) }, customizeLaunch);
+    const scopedInsta = ensureDefaultSessionPaths(id);
+    const client = new InstaConnect(
+      {
+        insta: scopedInsta,
+        ...(createOpts?.headless !== undefined ? { headless: createOpts.headless } : {}),
+      },
+      customizeLaunch,
+    );
     const media = createMediaProxy(client, publicBaseUrl, id);
     const context: SessionContext = { client, media, createdAt: new Date() };
     sessions.set(id, context);

@@ -14,7 +14,7 @@ export interface InstaConnectConfig {
   viewportHeight?: number;
   /**
    * `headless` do Puppeteer quando `LaunchOptions.headless` não for informado.
-   * Padrão: `false`.
+   * Padrão: `true` (sem janela). Use `headless: false` para ver o Chrome.
    */
   headless?: boolean;
 }
@@ -44,6 +44,8 @@ export interface SessionPayload {
 
 export interface CreateSessionPayload {
   sessionId?: string;
+  /** Enviado pelo cliente CLI; servidor aplica ao `InstaConnect` ao criar a sessão. */
+  headless?: boolean;
 }
 
 export interface SessionSummary {

@@ -1,7 +1,31 @@
+import path from "node:path";
 import readline from "node:readline";
+import { config as loadEnv } from "dotenv";
+
+loadEnv({ path: path.resolve(process.cwd(), ".env") });
+
 import { io, Socket } from "socket.io-client";
 import { formatDmTapMessage, toRecord } from "./client/dm-tap-format";
 import { printHelp, printMessageModeHelp } from "./client/help";
+
+function parseInstaHeadlessEnv(): boolean | undefined {
+  const raw = process.env.INSTA_HEADLESS;
+  if (raw === undefined || String(raw).trim() === "") return undefined;
+  const v = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  return undefined;
+}
+
+/** Se definido, enviado em todo `createSession` para o servidor (novas sessões). */
+const envHeadless = parseInstaHeadlessEnv();
+
+function buildCreateSessionPayload(sessionId?: string): { sessionId?: string; headless?: boolean } {
+  const out: { sessionId?: string; headless?: boolean } = {};
+  if (sessionId) out.sessionId = sessionId;
+  if (envHeadless !== undefined) out.headless = envHeadless;
+  return out;
+}
 
 const serverUrl = process.argv[2] || "http://localhost:4010";
 const serverConnectionInfo = parseServerConnectionInfo(serverUrl);
@@ -97,6 +121,7 @@ log("tentando conectar ao servidor", {
   host: serverConnectionInfo.host,
   port: serverConnectionInfo.port,
   protocol: serverConnectionInfo.protocol,
+  ...(envHeadless !== undefined ? { INSTA_HEADLESS: envHeadless } : {}),
 });
 
 socket.on("connect", () => {
@@ -109,10 +134,10 @@ socket.on("connect", () => {
   printHelp();
   if (activeSessionId) {
     waitingAutoSession = true;
-    originalEmit("createSession", { sessionId: activeSessionId });
+    originalEmit("createSession", buildCreateSessionPayload(activeSessionId));
   } else {
     waitingAutoSession = true;
-    originalEmit("createSession", {});
+    originalEmit("createSession", buildCreateSessionPayload());
   }
 });
 
@@ -692,7 +717,7 @@ rl.on("line", (line: string) => {
     const sessionId = String(args[0] || "").trim();
     waitingAutoSession = true;
     log("enviando comando", { command: "createSession", sessionId: sessionId || "(auto)" });
-    originalEmit("createSession", sessionId ? { sessionId } : {});
+    originalEmit("createSession", buildCreateSessionPayload(sessionId || undefined));
   } else if (command === "listSessions") {
     log("enviando comando", { command: "listSessions" });
     originalEmit("listSessions", {});

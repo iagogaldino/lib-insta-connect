@@ -19,7 +19,10 @@ export function registerSocketServer(
   options: {
     getSession: (sessionId: string) => SessionContext | undefined;
     listSessions: () => Array<{ sessionId: string; createdAt: Date; context: SessionContext }>;
-    createSession: (sessionId?: string) => { sessionId: string; created: boolean; context: SessionContext };
+    createSession: (
+      sessionId?: string,
+      createOpts?: { headless?: boolean },
+    ) => { sessionId: string; created: boolean; context: SessionContext };
     closeSession: (sessionId: string) => Promise<boolean>;
     log: (message: string, meta?: Record<string, unknown>) => void;
   },
@@ -99,10 +102,14 @@ export function registerSocketServer(
       log("client disconnected", { socketId: socket.id, reason });
     });
 
-    socket.on("createSession", (payload: { sessionId?: string } | undefined) => {
+    socket.on("createSession", (payload: { sessionId?: string; headless?: boolean } | undefined) => {
       try {
         const desiredId = String(payload?.sessionId || "").trim() || undefined;
-        const result = createSession(desiredId);
+        const hl = payload?.headless;
+        const result = createSession(
+          desiredId,
+          hl !== undefined ? { headless: Boolean(hl) } : undefined,
+        );
         socket.emit("createSession:result", {
           ok: true,
           sessionId: result.sessionId,

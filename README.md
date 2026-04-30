@@ -69,7 +69,7 @@ A biblioteca **não** lê `.env` nem `process.env` para caminhos do browser ou d
 | `basePath` | `process.cwd()` | Base para resolver `sessionDir` e `seenMessagesFile` quando forem relativos. |
 | `sessionDir` | `.session/chrome-profile` | Perfil do Chromium (cookies, localStorage). Vários `basePath` + `sessionDir` distintos = várias contas. |
 | `seenMessagesFile` | `.session/seen-message-ids.json` | Cache de `messageId` do `dmTap` (deduplicação entre reinícios). |
-| `headless` | `false` se `LaunchOptions.headless` não for passado | Modo headless; `headless` em `new InstaConnect({ headless: true, insta: {...} })` tem prioridade. |
+| `headless` | `true` se não for passado (sem janela) | Chrome headless por padrão; `headless` em `new InstaConnect({ headless: false, insta: {...} })` força interface visível. |
 | `viewportWidth` / `viewportHeight` | efetivo **1000**×**600** (com clamp) | Viewport “desktop”. Largura mín. efetiva 1024, altura mín. 600, para evitar layout mobile. |
 
 Ajuste fino do Puppeteer: segundo argumento do construtor, ou o tipo `InstaConnectLaunchCustomize` — recebe o `LaunchOptions` já resolvido e devolve o objeto final (ex.: acrescentar `--no-sandbox` em `args`).
