@@ -48,7 +48,36 @@ export interface CreateSessionPayload {
   headless?: boolean;
 }
 
-export type LoginChallengeType = "security_code" | "two_factor" | "email_code" | "unknown";
+export type LoginChallengeType =
+  | "security_code"
+  | "two_factor"
+  | "email_code"
+  | "recaptcha"
+  | "manual_interaction"
+  | "unknown";
+
+export interface ChallengeScreenshotResult {
+  base64: string;
+  mimeType: "image/png";
+  width: number;
+  height: number;
+  url: string;
+}
+
+export interface ChallengeClickResult {
+  clicked: boolean;
+  url: string;
+}
+
+export interface LoginChallengeEvent {
+  sessionId: string;
+  challengeRequired: boolean;
+  challengeType: LoginChallengeType;
+  url: string | null;
+  message?: string;
+  manualInteractionRequired: boolean;
+  challengeAssistUrl?: string;
+}
 
 export interface SessionSummary {
   sessionId: string;

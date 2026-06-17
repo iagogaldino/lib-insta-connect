@@ -24,6 +24,8 @@ import type {
   InterceptedConversation,
   InstagramSocketFrameRecord,
   InstagramSocketProbeResult,
+  ChallengeClickResult,
+  ChallengeScreenshotResult,
   LoginChallengeType,
   LoginResult,
   MessageItem,
@@ -1066,7 +1068,17 @@ export class InstaConnect {
     return url.includes("instagram.com") && !this.isIncompleteLoginUrl(url);
   }
 
+  public isManualInteractionChallengeType(type: LoginChallengeType): boolean {
+    return type === "recaptcha" || type === "manual_interaction";
+  }
+
   private challengeMessageForType(type: LoginChallengeType): string {
+    if (type === "recaptcha") {
+      return "reCAPTCHA necessario. Complete a verificacao visual na tela de assistencia remota.";
+    }
+    if (type === "manual_interaction") {
+      return "Interacao manual necessaria. Use a tela de assistencia remota para concluir a verificacao.";
+    }
     if (type === "email_code") {
       return "Codigo enviado por e-mail necessario. Informe o codigo recebido para concluir o login.";
     }
@@ -1076,14 +1088,40 @@ export class InstaConnect {
     return "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.";
   }
 
+  private async hasRecaptchaDom(): Promise<boolean> {
+    const page = this.page;
+    if (!page || page.isClosed()) {
+      return false;
+    }
+    return page.evaluate(() => {
+      const text = (document.body?.innerText || "").toLowerCase();
+      return (
+        text.includes("recaptcha") ||
+        text.includes("i'm not a robot") ||
+        text.includes("nao sou um robo") ||
+        text.includes("não sou um robô") ||
+        Boolean(document.querySelector('iframe[src*="recaptcha"]')) ||
+        Boolean(document.querySelector('iframe[title*="recaptcha" i]')) ||
+        Boolean(document.querySelector(".g-recaptcha")) ||
+        Boolean(document.querySelector("#recaptcha"))
+      );
+    });
+  }
+
   private resolveChallengeTypeFromUrl(normalizedUrl: string): LoginChallengeType {
     const hasTwoFactorUrl =
       normalizedUrl.includes("/accounts/login/two_factor") || normalizedUrl.includes("/accounts/two_factor");
     if (hasTwoFactorUrl) {
       return "two_factor";
     }
-    if (normalizedUrl.includes("/auth_platform/")) {
+    if (normalizedUrl.includes("/auth_platform/recaptcha")) {
+      return "recaptcha";
+    }
+    if (normalizedUrl.includes("/auth_platform/codeentry")) {
       return "email_code";
+    }
+    if (normalizedUrl.includes("/auth_platform/")) {
+      return "manual_interaction";
     }
     if (normalizedUrl.includes("/challenge/")) {
       return "security_code";
@@ -1137,10 +1175,16 @@ export class InstaConnect {
     // Em rotas de challenge/2FA/auth platform a flag precisa ser verdadeira, mesmo que o DOM
     // ainda nao tenha carregado os inputs/labels quando a checagem ocorrer.
     if (hasKnownChallengeUrl) {
+      let type = urlChallengeType;
+      if (type !== "recaptcha" && (await this.hasRecaptchaDom())) {
+        type = "recaptcha";
+      } else if (type === "manual_interaction" && (await this.hasSecurityCodeInputOnly())) {
+        type = "email_code";
+      }
       return {
         required: true,
-        type: urlChallengeType,
-        message: this.challengeMessageForType(urlChallengeType),
+        type,
+        message: this.challengeMessageForType(type),
       };
     }
 
@@ -1178,6 +1222,13 @@ export class InstaConnect {
     });
 
     if (!hasKnownChallengeUrl && !hasCodeInput && !promptFlags.hasSecurityCodePrompt && !promptFlags.hasEmailCodePrompt) {
+      if (await this.hasRecaptchaDom()) {
+        return {
+          required: true,
+          type: "recaptcha",
+          message: this.challengeMessageForType("recaptcha"),
+        };
+      }
       return {
         required: false,
         type: "unknown",
@@ -1185,11 +1236,13 @@ export class InstaConnect {
       };
     }
 
-    const type: LoginChallengeType = promptFlags.hasEmailCodePrompt
-      ? "email_code"
-      : promptFlags.hasSecurityCodePrompt
-        ? "security_code"
-        : "unknown";
+    const type: LoginChallengeType = (await this.hasRecaptchaDom())
+      ? "recaptcha"
+      : promptFlags.hasEmailCodePrompt
+        ? "email_code"
+        : promptFlags.hasSecurityCodePrompt
+          ? "security_code"
+          : "unknown";
 
     return {
       required: true,
@@ -1263,6 +1316,106 @@ export class InstaConnect {
       loggedIn,
       challengeRequired: challenge.required,
       ...(challenge.required ? { challengeType: challenge.type, message: challenge.message } : {}),
+    };
+  }
+
+  public async getChallengeScreenshot(): Promise<ChallengeScreenshotResult> {
+    await this.launch();
+    const page = this.page;
+    if (!page || page.isClosed()) {
+      throw new Error("Pagina do navegador nao disponivel.");
+    }
+    const viewport = page.viewport();
+    const buffer = (await page.screenshot({ type: "png", encoding: "binary" })) as Buffer;
+    return {
+      base64: buffer.toString("base64"),
+      mimeType: "image/png",
+      width: viewport?.width ?? this.getDesktopViewport().width,
+      height: viewport?.height ?? this.getDesktopViewport().height,
+      url: page.url(),
+    };
+  }
+
+  public async relayChallengeClick(x: number, y: number): Promise<ChallengeClickResult> {
+    await this.launch();
+    const page = this.page;
+    if (!page || page.isClosed()) {
+      throw new Error("Pagina do navegador nao disponivel.");
+    }
+    const vx = Math.max(0, Math.floor(Number(x)));
+    const vy = Math.max(0, Math.floor(Number(y)));
+    if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+      throw new Error("Coordenadas x/y invalidas.");
+    }
+    await page.mouse.click(vx, vy, { button: "left", clickCount: 1 });
+    await sleep(400);
+    return {
+      clicked: true,
+      url: page.url(),
+    };
+  }
+
+  public async relayChallengeKey(key: string): Promise<{ sent: boolean }> {
+    await this.launch();
+    const page = this.page;
+    if (!page || page.isClosed()) {
+      throw new Error("Pagina do navegador nao disponivel.");
+    }
+    const normalized = String(key || "").trim();
+    if (!normalized) {
+      throw new Error("key e obrigatorio.");
+    }
+    await page.keyboard.press(normalized as Parameters<Page["keyboard"]["press"]>[0]);
+    await sleep(200);
+    return { sent: true };
+  }
+
+  public async waitForChallengeResolved(timeoutMs = 120000): Promise<LoginResult> {
+    await this.launch();
+    const page = this.page;
+    if (!page || page.isClosed()) {
+      throw new Error("Pagina do navegador nao disponivel.");
+    }
+
+    const deadline = Date.now() + Math.max(1000, Math.floor(timeoutMs));
+    while (Date.now() < deadline) {
+      const currentUrl = page.url();
+      const challenge = await this.detectLoginChallenge();
+
+      if (this.isLoggedInUrl(currentUrl) && !challenge.required) {
+        return { success: true, url: currentUrl };
+      }
+
+      if (!challenge.required) {
+        await this.handlePostLoginPrompts().catch(() => null);
+        return this.resolveLoginResult();
+      }
+
+      if (challenge.required && !this.isManualInteractionChallengeType(challenge.type)) {
+        return {
+          success: false,
+          url: currentUrl,
+          challengeRequired: true,
+          challengeType: challenge.type,
+          message: challenge.message,
+        };
+      }
+
+      await sleep(500);
+    }
+
+    const currentUrl = page.url();
+    const challenge = await this.detectLoginChallenge();
+    return {
+      success: false,
+      url: currentUrl,
+      challengeRequired: challenge.required,
+      ...(challenge.required
+        ? {
+            challengeType: challenge.type,
+            message: `Timeout aguardando verificacao (${timeoutMs}ms). ${challenge.message}`,
+          }
+        : {}),
     };
   }
 
@@ -1590,6 +1743,11 @@ export class InstaConnect {
     const challenge = await this.detectLoginChallenge();
     if (!challenge.required) {
       return this.resolveLoginResult("Nenhum desafio de codigo ativo nesta sessao.");
+    }
+    if (this.isManualInteractionChallengeType(challenge.type)) {
+      throw new Error(
+        "Desafio visual ativo (reCAPTCHA/interacao manual). Use a assistencia remota antes de enviar codigo.",
+      );
     }
 
     const filled = await this.fillSecurityCodeInput(normalized);

@@ -67,6 +67,43 @@ let messageModeTarget: string | null = null;
 let activeSessionId: string | null = "ec3cf1d5-af25-4234-8e4b-927fa96d79fc";
 let waitingAutoSession = false;
 let waitingSecurityCode = false;
+let waitingManualChallenge = false;
+
+function isManualChallengeType(value: unknown): boolean {
+  return value === "recaptcha" || value === "manual_interaction";
+}
+
+function handleChallengePrompt(data: Record<string, unknown> | null | undefined): void {
+  if (!data) return;
+  const challengeRequired = Boolean(data.challengeRequired);
+  if (!challengeRequired) return;
+
+  const challengeType = String(data.challengeType || "security_code");
+  const challengeMessage = String(
+    data.message || "Verificacao de seguranca necessaria.",
+  );
+
+  if (isManualChallengeType(challengeType) || Boolean(data.manualInteractionRequired)) {
+    waitingManualChallenge = true;
+    waitingSecurityCode = false;
+    rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
+    const assistUrl = typeof data.challengeAssistUrl === "string" ? data.challengeAssistUrl : null;
+    console.log(`[CAPTCHA] ${challengeMessage} (tipo: ${challengeType})`);
+    if (assistUrl) {
+      console.log(`[CAPTCHA] Abra a verificacao remota: ${assistUrl}`);
+    } else {
+      console.log("[CAPTCHA] Use getSessionStatus ou waitForChallenge para acompanhar.");
+    }
+    rl.prompt(true);
+    return;
+  }
+
+  waitingManualChallenge = false;
+  waitingSecurityCode = true;
+  rl.setPrompt("2fa> ");
+  console.log(`[2FA] ${challengeMessage} (tipo: ${challengeType})`);
+  rl.prompt(true);
+}
 const socket: Socket = io(serverUrl, {
   transports: ["websocket"],
 });
@@ -75,6 +112,11 @@ const sessionRequiredCommands = new Set<string>([
   "openLogin",
   "login",
   "submitSecurityCode",
+  "getSessionStatus",
+  "getChallengeScreenshot",
+  "relayChallengeClick",
+  "relayChallengeKey",
+  "waitForChallengeResolved",
   "closeBrowser",
   "listConversations",
   "searchUsers",
@@ -234,21 +276,69 @@ socket.on("openLogin:result", (payload) => {
 
 socket.on("login:result", (payload) => {
   const data = toRecord(payload);
-  const challengeRequired = Boolean(data?.challengeRequired);
-  if (data?.ok && challengeRequired) {
-    waitingSecurityCode = true;
-    rl.setPrompt("2fa> ");
-    const challengeType = String(data?.challengeType || "security_code");
-    const challengeMessage = String(
-      data?.message || "Codigo de seguranca necessario. Digite o codigo e pressione Enter.",
-    );
-    console.log(`[2FA] ${challengeMessage} (tipo: ${challengeType})`);
-    rl.prompt(true);
-  } else if (data?.ok && waitingSecurityCode) {
+  if (data?.ok && Boolean(data.challengeRequired)) {
+    handleChallengePrompt(data);
+  } else if (data?.ok && (waitingSecurityCode || waitingManualChallenge)) {
     waitingSecurityCode = false;
+    waitingManualChallenge = false;
     rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
   }
   log("login:result", payload);
+});
+
+socket.on("login:challenge", (payload) => {
+  handleChallengePrompt(toRecord(payload));
+  log("login:challenge", payload);
+});
+
+socket.on("login:challengeResolved", (payload) => {
+  const data = toRecord(payload);
+  waitingManualChallenge = false;
+  waitingSecurityCode = false;
+  rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
+  if (data?.success) {
+    console.log("[CAPTCHA] Verificacao concluida com sucesso.");
+  } else {
+    console.log("[CAPTCHA] Verificacao encerrada.");
+  }
+  log("login:challengeResolved", payload);
+});
+
+socket.on("getSessionStatus:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok) {
+    console.log("[status]", JSON.stringify(data, null, 2));
+  }
+  log("getSessionStatus:result", payload);
+});
+
+socket.on("getChallengeScreenshot:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok && typeof data.url === "string") {
+    console.log(`[screenshot] url=${data.url} (${data.width}x${data.height})`);
+  }
+  log("getChallengeScreenshot:result", payload);
+});
+
+socket.on("relayChallengeClick:result", (payload) => {
+  log("relayChallengeClick:result", payload);
+});
+
+socket.on("relayChallengeKey:result", (payload) => {
+  log("relayChallengeKey:result", payload);
+});
+
+socket.on("waitForChallengeResolved:result", (payload) => {
+  const data = toRecord(payload);
+  if (data?.ok && !Boolean(data.challengeRequired)) {
+    waitingManualChallenge = false;
+    waitingSecurityCode = false;
+    rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
+    console.log("[CAPTCHA] Desafio resolvido.");
+  } else if (data?.ok && Boolean(data.challengeRequired) && !isManualChallengeType(data.challengeType)) {
+    handleChallengePrompt(data);
+  }
+  log("waitForChallengeResolved:result", payload);
 });
 
 socket.on("submitSecurityCode:result", (payload) => {
@@ -256,13 +346,10 @@ socket.on("submitSecurityCode:result", (payload) => {
   if (data?.ok) {
     const challengeRequired = Boolean(data.challengeRequired);
     if (challengeRequired) {
-      waitingSecurityCode = true;
-      rl.setPrompt("2fa> ");
-      console.log(
-        `[2FA] Codigo recebido, mas o Instagram ainda pede verificacao. Tente novamente.`,
-      );
+      handleChallengePrompt(data);
     } else {
       waitingSecurityCode = false;
+      waitingManualChallenge = false;
       rl.setPrompt(messageModeTarget ? `mto:${messageModeTarget}> ` : "insta> ");
       console.log("[2FA] Codigo confirmado com sucesso.");
     }
@@ -793,6 +880,28 @@ rl.on("line", (line: string) => {
       log("enviando comando", { command: "submitSecurityCode" });
       socket.emit("submitSecurityCode", { code });
     }
+  } else if (command === "getSessionStatus") {
+    log("enviando comando", { command: "getSessionStatus" });
+    socket.emit("getSessionStatus");
+  } else if (command === "getChallengeScreenshot") {
+    log("enviando comando", { command: "getChallengeScreenshot" });
+    socket.emit("getChallengeScreenshot");
+  } else if (command === "challengeClick") {
+    const x = Number(args[0]);
+    const y = Number(args[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      log("uso invalido", { expected: "challengeClick <x> <y>" });
+    } else {
+      log("enviando comando", { command: "relayChallengeClick", x, y });
+      socket.emit("relayChallengeClick", { x, y });
+    }
+  } else if (command === "waitForChallenge") {
+    const timeoutMs = args[0] ? Number(args[0]) : 120000;
+    log("enviando comando", { command: "waitForChallengeResolved", timeoutMs });
+    socket.emit("waitForChallengeResolved", { timeoutMs });
+  } else if (command === "cancelChallenge") {
+    waitingManualChallenge = false;
+    log("modo de verificacao remota encerrado localmente");
   } else if (command === "closeBrowser") {
     log("enviando comando", { command: "closeBrowser" });
     socket.emit("closeBrowser");

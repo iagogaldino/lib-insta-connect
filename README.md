@@ -14,6 +14,12 @@ Biblioteca TypeScript/Node.js para automação do Instagram Web via Puppeteer, c
 - [Servidor Socket.IO em tempo real](#servidor-socketio-em-tempo-real)
   - [Comandos aceitos](#comandos-aceitos)
   - [Eventos emitidos](#eventos-emitidos)
+- [Verificação remota (reCAPTCHA e desafios visuais)](#verificação-remota-recaptcha-e-desafios-visuais)
+  - [Tipos de challenge](#tipos-de-challenge)
+  - [Página de assistência HTTP](#página-de-assistência-http)
+  - [Comandos Socket.IO](#comandos-socketio-de-assistência)
+  - [Integração em outra aplicação](#integração-em-outra-aplicação)
+  - [Teste com o CLI](#teste-com-o-cli)
 - [Cliente CLI interativo](#cliente-cli-interativo)
 - [DM Tap — interceptação de mensagens em tempo real](#dm-tap--interceptação-de-mensagens-em-tempo-real)
   - [Como funciona](#como-funciona)
@@ -126,8 +132,14 @@ Principais métodos públicos da classe `InstaConnect`:
 
 - `launch()` — sobe o Chromium com o perfil persistido
 - `openLoginPage()` — navega para a tela de login
-- `login(username, password)` — faz login; se cair em challenge retorna `challengeRequired: true` (`challengeType`: `security_code`, `two_factor`, `email_code`)
-- `submitSecurityCode(code)` — envia o código de segurança/2FA/e-mail quando o login entra em challenge
+- `login(username, password)` — faz login; se cair em challenge retorna `challengeRequired: true` (`challengeType`: `security_code`, `two_factor`, `email_code`, `recaptcha`, `manual_interaction`)
+- `submitSecurityCode(code)` — envia o código de segurança/2FA/e-mail quando o login entra em challenge (não use em `recaptcha` / `manual_interaction`)
+- `getChallengeScreenshot()` — captura PNG (base64) da página atual para assistência remota
+- `relayChallengeClick(x, y)` — envia clique ao Chromium da sessão
+- `relayChallengeKey(key)` — envia tecla ao Chromium (ex.: `Enter`)
+- `waitForChallengeResolved(timeoutMs?)` — aguarda conclusão de desafio visual ou transição para challenge de código
+- `isManualInteractionChallengeType(type)` — indica se o challenge exige interação visual (reCAPTCHA)
+- `getSessionStatus()` — status da sessão (`loggedIn`, `challengeRequired`, `challengeType`, URL atual)
 - `close()` — encerra o browser
 - `listConversations(limit)` — scraping DOM da inbox
 - `searchUsers(query, { limit? })` — busca de contas combinando respostas de rede (JSON) e links no DOM; requer sessão autenticada
@@ -175,7 +187,12 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `closeSession` | `{ sessionId }` | Fecha browser/recursos da sessão e remove do registry |
 | `openLogin` | `{ sessionId }` | Abre a página de login da sessão |
 | `login` | `{ sessionId, username, password }` | Faz login com credenciais na sessão |
-| `submitSecurityCode` | `{ sessionId, code }` | Envia o código de segurança quando o login entrar em challenge |
+| `submitSecurityCode` | `{ sessionId, code }` | Envia o código de segurança quando o login entrar em challenge de **código** (2FA/e-mail) |
+| `getSessionStatus` | `{ sessionId }` | Consulta status da sessão (login, URL, tipo de challenge) |
+| `getChallengeScreenshot` | `{ sessionId }` | Captura screenshot PNG (base64) da página atual |
+| `relayChallengeClick` | `{ sessionId, x, y }` | Envia clique na coordenada do viewport |
+| `relayChallengeKey` | `{ sessionId, key }` | Envia tecla (ex.: `Enter`) |
+| `waitForChallengeResolved` | `{ sessionId, timeoutMs? }` | Aguarda resolução de reCAPTCHA/desafio visual (default 120s) |
 | `closeBrowser` | `{ sessionId }` | Encerra o Chromium da sessão |
 | `listConversations` | `{ sessionId, limit? }` | Lista conversas da inbox via DOM |
 | `searchUsers` | `{ sessionId, query, limit? }` | Busca de usuários; `query` é obrigatório |
@@ -212,7 +229,14 @@ Assim que um cliente conecta, recebe o evento `status`:
 | `closeSession:result` | Resposta de `closeSession` |
 | `openLogin:result` | Resposta de `openLogin` |
 | `login:result` | Resposta de `login` |
+| **`login:challenge`** | Desafio detectado após login/openLogin/submitSecurityCode; inclui `challengeAssistUrl` quando exige interação visual |
+| **`login:challengeResolved`** | Desafio visual concluído (login seguiu ou saiu do reCAPTCHA) |
 | `submitSecurityCode:result` | Resposta de `submitSecurityCode` |
+| `getSessionStatus:result` | Resposta de `getSessionStatus` |
+| `getChallengeScreenshot:result` | Resposta de `getChallengeScreenshot` |
+| `relayChallengeClick:result` | Resposta de `relayChallengeClick` |
+| `relayChallengeKey:result` | Resposta de `relayChallengeKey` |
+| `waitForChallengeResolved:result` | Resposta de `waitForChallengeResolved` |
 | `closeBrowser:result` | Resposta de `closeBrowser` |
 | `listConversations:result` | Resposta de `listConversations` |
 | `searchUsers:result` | Resposta de `searchUsers` |
@@ -240,6 +264,151 @@ Assim que um cliente conecta, recebe o evento `status`:
 
 ---
 
+## Verificação remota (reCAPTCHA e desafios visuais)
+
+Quando o Instagram exige **reCAPTCHA** ou outra interação visual (`/auth_platform/recaptcha/`), o usuário final não consegue resolver só digitando código — o browser roda no servidor. A lib expõe **assistência remota**: o usuário vê a tela e clica nela; os cliques são repassados ao Chromium da sessão.
+
+> **Recomendado:** crie a sessão com `headless: false` (`createSession` com `{ headless: false }` ou `INSTA_HEADLESS=0` no CLI). O reCAPTCHA Enterprise costuma bloquear headless puro.
+
+### Tipos de challenge
+
+| `challengeType` | Significado | Como resolver |
+| --- | --- | --- |
+| `recaptcha` | Google reCAPTCHA (checkbox / puzzle) | Página de assistência ou `relayChallengeClick` |
+| `manual_interaction` | Outro checkpoint visual em `/auth_platform/` | Idem |
+| `email_code` | Código enviado por e-mail | `submitSecurityCode` |
+| `two_factor` | 2FA do Instagram | `submitSecurityCode` |
+| `security_code` | Challenge legado `/challenge/` | `submitSecurityCode` |
+
+Após resolver o reCAPTCHA, o fluxo pode continuar com **código 2FA/e-mail** — a lib emite novo `login:challenge` ou `login:result` com o tipo adequado.
+
+### Página de assistência HTTP
+
+Por sessão, o servidor expõe uma UI pronta:
+
+```
+GET http://<host>:<porta>/session/<sessionId>/challenge
+```
+
+A página atualiza a captura de tela automaticamente (~2,5 s) e **cliques na imagem** viram `relayChallengeClick` no browser remoto.
+
+Endpoints auxiliares (úteis para embed customizado):
+
+| Rota | Método | Descrição |
+| --- | --- | --- |
+| `/session/:sessionId/challenge/status` | GET | JSON com `loggedIn`, `challengeRequired`, `challengeType` |
+| `/session/:sessionId/challenge/screenshot.json` | GET | PNG em base64 + dimensões do viewport |
+| `/session/:sessionId/challenge/screenshot` | GET | PNG binário |
+| `/session/:sessionId/challenge/click` | POST | Corpo `{ "x": 120, "y": 340 }` — clique no viewport |
+
+Substitua `<host>:<porta>` pelo `publicBaseUrl` passado em `startInstaConnectSocketServer` (ex.: `http://localhost:4010`).
+
+### Comandos Socket.IO de assistência
+
+Fluxo típico na sua aplicação:
+
+1. `createSession` → `login`
+2. Escutar `login:challenge` ou `login:result` com `challengeRequired: true`
+3. Se `manualInteractionRequired: true`, abrir `challengeAssistUrl` (modal, nova aba ou iframe)
+4. Opcional: `waitForChallengeResolved` com timeout
+5. Escutar `login:challengeResolved` ou novo challenge de código → `submitSecurityCode`
+
+Payload de `login:challenge` (exemplo):
+
+```json
+{
+  "sessionId": "abc-123",
+  "challengeRequired": true,
+  "challengeType": "recaptcha",
+  "url": "https://www.instagram.com/auth_platform/recaptcha/?apc=...",
+  "message": "reCAPTCHA necessario. Complete a verificacao visual...",
+  "manualInteractionRequired": true,
+  "challengeAssistUrl": "http://localhost:4010/session/abc-123/challenge"
+}
+```
+
+### Integração em outra aplicação
+
+```ts
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:4010", { transports: ["websocket"] });
+let sessionId = "";
+
+socket.on("createSession:result", (r) => {
+  sessionId = r.sessionId;
+  socket.emit("login", { sessionId, username: "...", password: "..." });
+});
+
+socket.on("login:challenge", (data) => {
+  if (data.manualInteractionRequired && data.challengeAssistUrl) {
+    // Abra para o usuário final resolver o captcha
+    window.open(data.challengeAssistUrl, "_blank");
+    socket.emit("waitForChallengeResolved", { sessionId, timeoutMs: 180000 });
+  }
+});
+
+socket.on("login:challengeResolved", () => {
+  console.log("Verificacao visual concluida");
+});
+
+socket.on("waitForChallengeResolved:result", (r) => {
+  if (r.challengeRequired && r.challengeType === "email_code") {
+    // Agora peça o codigo por e-mail na sua UI
+    const code = prompt("Codigo do e-mail:");
+    socket.emit("submitSecurityCode", { sessionId, code });
+  }
+});
+```
+
+Embed programático (sem a página HTML), usando screenshot + clique:
+
+```ts
+socket.emit("getChallengeScreenshot", { sessionId });
+socket.on("getChallengeScreenshot:result", (shot) => {
+  // Exiba shot.base64 num <img> e, no click, emita:
+  socket.emit("relayChallengeClick", { sessionId, x: 180, y: 320 });
+});
+```
+
+### Teste com o CLI
+
+Terminal 1 — servidor:
+
+```bash
+npm run socket:dev
+```
+
+Terminal 2 — cliente (recomendado `INSTA_HEADLESS=0` no `.env` ou ambiente):
+
+```bash
+npm run socket:client:dev
+```
+
+No prompt `insta>`:
+
+```bash
+createSession
+login seu_usuario sua_senha
+```
+
+Se aparecer reCAPTCHA, o CLI imprime:
+
+```text
+[CAPTCHA] Abra a verificacao remota: http://localhost:4010/session/<sessionId>/challenge
+```
+
+Abra a URL no browser, clique no reCAPTCHA e acompanhe:
+
+```bash
+getSessionStatus
+waitForChallenge 120000
+```
+
+Comandos extras do CLI: `getChallengeScreenshot`, `challengeClick <x> <y>`, `cancelChallenge`.
+
+---
+
 ## Cliente CLI interativo
 
 Em um segundo terminal (com o servidor já no ar):
@@ -261,6 +430,11 @@ openLogin
 login <username> <password>
 submitSecurityCode <codigo>
 cancel2fa
+getSessionStatus
+getChallengeScreenshot
+challengeClick <x> <y>
+waitForChallenge [timeoutMs]
+cancelChallenge
 listConversations [limit]
 searchUsers <query> [limit]
 listSuggestedPeople [limit]
@@ -296,7 +470,10 @@ exit
 
 Com o prefixo `mto:` (ex.: `mto:contaamiga`), o CLI abre a conversa em aba dedicada, pode iniciar o `dmTap` e entra no modo de envio (mensagem livre + atalhos `/audio`, `/foto`, etc. — ver `printMessageModeHelp` no mesmo ficheiro).
 
-No fluxo de login, se `login` retornar challenge (`challengeRequired: true`), o CLI entra no prompt `2fa>` para você digitar o código recebido. Também é possível enviar manualmente com `submitSecurityCode <codigo>` e sair desse modo com `cancel2fa`.
+No fluxo de login:
+
+- **Challenge de código** (`email_code`, `two_factor`, `security_code`): o CLI entra no prompt `2fa>` para digitar o código. Use `submitSecurityCode <codigo>` ou digite direto; `cancel2fa` sai desse modo.
+- **reCAPTCHA / interação visual** (`recaptcha`, `manual_interaction`): o CLI exibe a URL `/session/<id>/challenge` — abra no browser e conclua a verificação. Veja [Verificação remota](#verificação-remota-recaptcha-e-desafios-visuais).
 
 Exemplos de auto-follow por filtro:
 
@@ -509,6 +686,7 @@ insta-connect-delsuc/
 │   │   └── InstaConnect.ts
 │   ├── server/
 │   │   ├── register-socket-handlers.ts
+│   │   ├── challenge-assist.ts         # HTTP + UI de verificacao remota (reCAPTCHA)
 │   │   └── media-proxy.ts
 │   ├── client/
 │   │   ├── help.ts
@@ -530,7 +708,8 @@ insta-connect-delsuc/
 ## Limitações conhecidas
 
 - **Envio rápido via API interna**: desabilitado. O IG Web usa GraphQL mutations com tokens voláteis; manter isso estável exige re-engenharia contínua.
-- **Cloudflare / checkpoints avançados**: não tratados automaticamente. Para challenge de código (`security_code` / `two_factor` / `email_code` em `/auth_platform/codeentry/`), a lib suporta envio assistido via `submitSecurityCode`, mas desafios adicionais podem exigir intervenção manual.
+- **reCAPTCHA / checkpoints visuais**: suportados via [verificação remota](#verificação-remota-recaptcha-e-desafios-visuais) (`/session/:id/challenge`, Socket `relayChallengeClick`, eventos `login:challenge`). Não há bypass automático — o usuário precisa interagir. APIs de resolução de captcha (2Captcha etc.) não são recomendadas (baixa taxa com reCAPTCHA Enterprise, violam ToS).
+- **Challenge de código**: `submitSecurityCode` cobre `security_code`, `two_factor` e `email_code` (`/auth_platform/codeentry/`).
 - **Tópicos MQTT fora do DM**: o `dmTap` filtra apenas frames que pareçam mensagens diretas. Outras notificações (likes, follows) não são propagadas.
 - **Parser Thrift**: heurístico (sem schema oficial). A maior parte do IG Web atual transmite JSON puro; o fallback Thrift existe por robustez histórica.
 - **Windows + nodemon**: ao editar `src/*.ts` com o socket em dev, o nodemon reinicia o processo Node mas **não** fecha o Chromium. Em casos raros o lock do profile permanece — reinicie o dev server e, se necessário, remova `Singleton*` do profile.

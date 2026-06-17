@@ -4,6 +4,7 @@ import path from "node:path";
 import { Server } from "socket.io";
 import { InstaConnect } from "./insta-connect/InstaConnect";
 import { createMediaProxy } from "./server/media-proxy";
+import { createChallengeAssist } from "./server/challenge-assist";
 import { registerSocketServer } from "./server/register-socket-handlers";
 import type { InstaConnectSocketServerConfig } from "./types";
 
@@ -22,6 +23,7 @@ export function startInstaConnectSocketServer(
   type SessionContext = {
     client: InstaConnect;
     media: ReturnType<typeof createMediaProxy>;
+    challenge: ReturnType<typeof createChallengeAssist>;
     createdAt: Date;
   };
   const sessions = new Map<string, SessionContext>();
@@ -75,7 +77,8 @@ export function startInstaConnectSocketServer(
       customizeLaunch,
     );
     const media = createMediaProxy(client, publicBaseUrl, id);
-    const context: SessionContext = { client, media, createdAt: new Date() };
+    const challenge = createChallengeAssist((lookupId) => sessions.get(lookupId)?.client, publicBaseUrl, id);
+    const context: SessionContext = { client, media, challenge, createdAt: new Date() };
     sessions.set(id, context);
     return { sessionId: id, created: true, context };
   };
@@ -91,13 +94,23 @@ export function startInstaConnectSocketServer(
   };
 
   const httpServer = createServer((req, res) => {
-    for (const context of sessions.values()) {
-      if (context.media.tryHandleMediaGet(req, res)) {
-        return;
+    void (async () => {
+      for (const context of sessions.values()) {
+        const handled = await context.challenge.tryHandleChallenge(req, res);
+        if (handled) {
+          return;
+        }
       }
-    }
-    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: false, error: "not found" }));
+      for (const context of sessions.values()) {
+        if (context.media.tryHandleMediaGet(req, res)) {
+          return;
+        }
+      }
+      if (!res.headersSent) {
+        res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "not found" }));
+      }
+    })();
   });
 
   const io = new Server(httpServer, {
@@ -116,6 +129,7 @@ export function startInstaConnectSocketServer(
       })),
     createSession,
     closeSession,
+    publicBaseUrl,
     log,
   });
 

@@ -9,6 +9,11 @@ export function printHelp(): void {
   console.log("  login <username> <password>");
   console.log("  submitSecurityCode <codigo>");
   console.log("  cancel2fa");
+  console.log("  getSessionStatus");
+  console.log("  getChallengeScreenshot");
+  console.log("  challengeClick <x> <y>");
+  console.log("  waitForChallenge [timeoutMs]");
+  console.log("  cancelChallenge");
   console.log("  listConversations [limit]");
   console.log("  searchUsers <query> [limit]");
   console.log("  listSuggestedPeople [limit]");

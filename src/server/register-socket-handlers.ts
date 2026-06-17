@@ -1,7 +1,8 @@
-﻿import type { Server } from "socket.io";
+﻿import type { Server, Socket } from "socket.io";
 import type { InstaConnect } from "../insta-connect/InstaConnect";
 import type { MediaProxy } from "./media-proxy";
-import type { OpenConversationResult } from "../types";
+import type { ChallengeAssist } from "./challenge-assist";
+import type { LoginResult, OpenConversationResult } from "../types";
 
 function extractThreadIdFromDirectUrl(url: string): string | null {
   const m = url.match(/\/direct\/t\/([^/?#]+)/i);
@@ -11,8 +12,43 @@ function extractThreadIdFromDirectUrl(url: string): string | null {
 type SessionContext = {
   client: InstaConnect;
   media: MediaProxy;
+  challenge: ChallengeAssist;
   createdAt: Date;
 };
+
+async function emitLoginChallengeIfNeeded(
+  socket: Socket,
+  sessionId: string,
+  client: InstaConnect,
+  challengeAssistUrl: string,
+): Promise<void> {
+  const status = await client.getSessionStatus().catch(() => null);
+  if (!status?.challengeRequired || !status.challengeType) {
+    return;
+  }
+  const manualInteractionRequired = client.isManualInteractionChallengeType(status.challengeType);
+  socket.emit("login:challenge", {
+    sessionId,
+    challengeRequired: true,
+    challengeType: status.challengeType,
+    url: status.currentUrl,
+    message: status.message,
+    manualInteractionRequired,
+    ...(manualInteractionRequired ? { challengeAssistUrl } : {}),
+  });
+}
+
+function emitLoginChallengeResolved(socket: Socket, sessionId: string, result: LoginResult): void {
+  if (result.challengeRequired) {
+    return;
+  }
+  socket.emit("login:challengeResolved", {
+    sessionId,
+    success: result.success,
+    url: result.url,
+    message: result.message,
+  });
+}
 
 export function registerSocketServer(
   io: Server,
@@ -24,10 +60,11 @@ export function registerSocketServer(
       createOpts?: { headless?: boolean },
     ) => { sessionId: string; created: boolean; context: SessionContext };
     closeSession: (sessionId: string) => Promise<boolean>;
+    publicBaseUrl: string;
     log: (message: string, meta?: Record<string, unknown>) => void;
   },
 ): void {
-  const { getSession, listSessions, createSession, closeSession, log } = options;
+  const { getSession, listSessions, createSession, closeSession, publicBaseUrl, log } = options;
 
   io.on("connection", (socket) => {
     const startListenerPromises = new Map<string, Promise<{ started: boolean; url: string }>>();
@@ -178,6 +215,12 @@ export function registerSocketServer(
       try {
         const url = await resolved.context.client.openLoginPage();
         socket.emit("openLogin:result", { ok: true, sessionId: resolved.sessionId, url });
+        await emitLoginChallengeIfNeeded(
+          socket,
+          resolved.sessionId,
+          resolved.context.client,
+          resolved.context.challenge.challengeAssistUrl,
+        );
       } catch (error) {
         socket.emit("openLogin:result", {
           ok: false,
@@ -199,6 +242,16 @@ export function registerSocketServer(
         }
         const result = await resolved.context.client.login(username, password);
         socket.emit("login:result", { ok: true, sessionId: resolved.sessionId, ...result });
+        if (result.challengeRequired) {
+          await emitLoginChallengeIfNeeded(
+            socket,
+            resolved.sessionId,
+            resolved.context.client,
+            resolved.context.challenge.challengeAssistUrl,
+          );
+        } else {
+          emitLoginChallengeResolved(socket, resolved.sessionId, result);
+        }
       } catch (error) {
         socket.emit("login:result", {
           ok: false,
@@ -223,6 +276,16 @@ export function registerSocketServer(
         }
         const result = await resolved.context.client.submitSecurityCode(code);
         socket.emit("submitSecurityCode:result", { ok: true, sessionId: resolved.sessionId, ...result });
+        if (result.challengeRequired) {
+          await emitLoginChallengeIfNeeded(
+            socket,
+            resolved.sessionId,
+            resolved.context.client,
+            resolved.context.challenge.challengeAssistUrl,
+          );
+        } else {
+          emitLoginChallengeResolved(socket, resolved.sessionId, result);
+        }
       } catch (error) {
         socket.emit("submitSecurityCode:result", {
           ok: false,
@@ -231,6 +294,154 @@ export function registerSocketServer(
         });
       }
     });
+
+    socket.on("getSessionStatus", async (payload: { sessionId?: string } | undefined) => {
+      const resolved = requireContext(payload, "getSessionStatus");
+      if (!resolved) return;
+      try {
+        const status = await resolved.context.client.getSessionStatus();
+        socket.emit("getSessionStatus:result", {
+          ok: true,
+          sessionId: resolved.sessionId,
+          ...status,
+          manualInteractionRequired:
+            status.challengeRequired &&
+            status.challengeType !== undefined &&
+            resolved.context.client.isManualInteractionChallengeType(status.challengeType),
+          challengeAssistUrl: resolved.context.challenge.challengeAssistUrl,
+        });
+      } catch (error) {
+        socket.emit("getSessionStatus:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    socket.on("getChallengeScreenshot", async (payload: { sessionId?: string } | undefined) => {
+      const resolved = requireContext(payload, "getChallengeScreenshot");
+      if (!resolved) return;
+      try {
+        const screenshot = await resolved.context.client.getChallengeScreenshot();
+        socket.emit("getChallengeScreenshot:result", {
+          ok: true,
+          sessionId: resolved.sessionId,
+          ...screenshot,
+        });
+      } catch (error) {
+        socket.emit("getChallengeScreenshot:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    socket.on(
+      "relayChallengeClick",
+      async (payload: { sessionId?: string; x?: number; y?: number } | undefined) => {
+        const resolved = requireContext(payload, "relayChallengeClick");
+        if (!resolved) return;
+        try {
+          const x = Number(payload?.x);
+          const y = Number(payload?.y);
+          const result = await resolved.context.client.relayChallengeClick(x, y);
+          socket.emit("relayChallengeClick:result", {
+            ok: true,
+            sessionId: resolved.sessionId,
+            ...result,
+          });
+          const status = await resolved.context.client.getSessionStatus();
+          if (
+            !status.challengeRequired ||
+            (status.challengeType !== undefined &&
+              !resolved.context.client.isManualInteractionChallengeType(status.challengeType))
+          ) {
+            const loginResult = await resolved.context.client.waitForChallengeResolved(1500).catch(() => null);
+            if (loginResult && !loginResult.challengeRequired) {
+              emitLoginChallengeResolved(socket, resolved.sessionId, loginResult);
+            } else if (
+              status.challengeRequired &&
+              status.challengeType &&
+              !resolved.context.client.isManualInteractionChallengeType(status.challengeType)
+            ) {
+              await emitLoginChallengeIfNeeded(
+                socket,
+                resolved.sessionId,
+                resolved.context.client,
+                resolved.context.challenge.challengeAssistUrl,
+              );
+            }
+          }
+        } catch (error) {
+          socket.emit("relayChallengeClick:result", {
+            ok: false,
+            sessionId: resolved.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
+
+    socket.on("relayChallengeKey", async (payload: { sessionId?: string; key?: string } | undefined) => {
+      const resolved = requireContext(payload, "relayChallengeKey");
+      if (!resolved) return;
+      try {
+        const key = String(payload?.key || "").trim();
+        const result = await resolved.context.client.relayChallengeKey(key);
+        socket.emit("relayChallengeKey:result", {
+          ok: true,
+          sessionId: resolved.sessionId,
+          ...result,
+        });
+      } catch (error) {
+        socket.emit("relayChallengeKey:result", {
+          ok: false,
+          sessionId: resolved.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    socket.on(
+      "waitForChallengeResolved",
+      async (payload: { sessionId?: string; timeoutMs?: number } | undefined) => {
+        const resolved = requireContext(payload, "waitForChallengeResolved");
+        if (!resolved) return;
+        try {
+          const timeoutMs =
+            typeof payload?.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
+              ? Math.floor(payload.timeoutMs)
+              : 120000;
+          const result = await resolved.context.client.waitForChallengeResolved(timeoutMs);
+          socket.emit("waitForChallengeResolved:result", {
+            ok: true,
+            sessionId: resolved.sessionId,
+            ...result,
+          });
+          if (!result.challengeRequired) {
+            emitLoginChallengeResolved(socket, resolved.sessionId, result);
+          } else if (
+            result.challengeType &&
+            !resolved.context.client.isManualInteractionChallengeType(result.challengeType)
+          ) {
+            await emitLoginChallengeIfNeeded(
+              socket,
+              resolved.sessionId,
+              resolved.context.client,
+              resolved.context.challenge.challengeAssistUrl,
+            );
+          }
+        } catch (error) {
+          socket.emit("waitForChallengeResolved:result", {
+            ok: false,
+            sessionId: resolved.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
 
     socket.on(
       "resolveVoiceMessage",
