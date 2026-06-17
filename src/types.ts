@@ -48,6 +48,8 @@ export interface CreateSessionPayload {
   headless?: boolean;
 }
 
+export type LoginChallengeType = "security_code" | "two_factor" | "email_code" | "unknown";
+
 export interface SessionSummary {
   sessionId: string;
   createdAt: string;
@@ -56,7 +58,7 @@ export interface SessionSummary {
     currentUrl: string | null;
     loggedIn: boolean;
     challengeRequired: boolean;
-    challengeType?: "security_code" | "two_factor" | "unknown";
+    challengeType?: LoginChallengeType;
     message?: string;
   };
 }
@@ -65,7 +67,7 @@ export interface LoginResult {
   success: boolean;
   url: string;
   challengeRequired?: boolean;
-  challengeType?: "security_code" | "two_factor" | "unknown";
+  challengeType?: LoginChallengeType;
   message?: string;
 }
 

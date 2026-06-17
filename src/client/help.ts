@@ -50,6 +50,7 @@ export function printHelp(): void {
 export function printMessageModeHelp(targetUsername: string): void {
   console.log("");
   console.log(`Modo conversa com "${targetUsername}" ativo.`);
+  console.log("Um bip toca no Windows quando chegar mensagem (desative com INSTA_MTO_BEEP=0).");
   console.log("Digite a mensagem e pressione Enter para enviar.");
   console.log("Comandos deste modo:");
   console.log("  /sair   - encerra o modo conversa");

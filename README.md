@@ -126,8 +126,8 @@ Principais métodos públicos da classe `InstaConnect`:
 
 - `launch()` — sobe o Chromium com o perfil persistido
 - `openLoginPage()` — navega para a tela de login
-- `login(username, password)` — faz login; se cair em challenge retorna `challengeRequired: true`
-- `submitSecurityCode(code)` — envia o código de segurança/2FA quando o login entra em challenge
+- `login(username, password)` — faz login; se cair em challenge retorna `challengeRequired: true` (`challengeType`: `security_code`, `two_factor`, `email_code`)
+- `submitSecurityCode(code)` — envia o código de segurança/2FA/e-mail quando o login entra em challenge
 - `close()` — encerra o browser
 - `listConversations(limit)` — scraping DOM da inbox
 - `searchUsers(query, { limit? })` — busca de contas combinando respostas de rede (JSON) e links no DOM; requer sessão autenticada
@@ -530,7 +530,7 @@ insta-connect-delsuc/
 ## Limitações conhecidas
 
 - **Envio rápido via API interna**: desabilitado. O IG Web usa GraphQL mutations com tokens voláteis; manter isso estável exige re-engenharia contínua.
-- **Cloudflare / checkpoints avançados**: não tratados automaticamente. Para challenge de código (`security code` / `two_factor`), a lib agora suporta envio assistido via `submitSecurityCode`, mas desafios adicionais podem exigir intervenção manual.
+- **Cloudflare / checkpoints avançados**: não tratados automaticamente. Para challenge de código (`security_code` / `two_factor` / `email_code` em `/auth_platform/codeentry/`), a lib suporta envio assistido via `submitSecurityCode`, mas desafios adicionais podem exigir intervenção manual.
 - **Tópicos MQTT fora do DM**: o `dmTap` filtra apenas frames que pareçam mensagens diretas. Outras notificações (likes, follows) não são propagadas.
 - **Parser Thrift**: heurístico (sem schema oficial). A maior parte do IG Web atual transmite JSON puro; o fallback Thrift existe por robustez histórica.
 - **Windows + nodemon**: ao editar `src/*.ts` com o socket em dev, o nodemon reinicia o processo Node mas **não** fecha o Chromium. Em casos raros o lock do profile permanece — reinicie o dev server e, se necessário, remova `Singleton*` do profile.

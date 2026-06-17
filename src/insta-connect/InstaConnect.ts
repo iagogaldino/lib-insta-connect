@@ -24,6 +24,7 @@ import type {
   InterceptedConversation,
   InstagramSocketFrameRecord,
   InstagramSocketProbeResult,
+  LoginChallengeType,
   LoginResult,
   MessageItem,
   MessageTransportRecord,
@@ -270,6 +271,365 @@ export class InstaConnect {
     return false;
   }
 
+  private async clickFirstActionContainingText(candidates: string[]): Promise<boolean> {
+    const normalizedCandidates = candidates.map((candidate) => candidate.toLowerCase());
+    return this.page!.evaluate((texts) => {
+      const nodes = Array.from(
+        document.querySelectorAll('button, div[role="button"], a[role="button"], a'),
+      ) as HTMLElement[];
+      for (const node of nodes) {
+        const text = (node.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!text) continue;
+        if (texts.some((candidate) => text === candidate || text.includes(candidate))) {
+          node.click();
+          return true;
+        }
+      }
+      return false;
+    }, normalizedCandidates);
+  }
+
+  private async hasLoginCredentialFields(): Promise<boolean> {
+    const page = this.page;
+    if (!page) {
+      return false;
+    }
+
+    return page.evaluate(() => {
+      const isVisible = (input: HTMLInputElement): boolean => {
+        if (input.offsetParent === null) return false;
+        const rect = input.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 4) return false;
+        return window.getComputedStyle(input).visibility !== "hidden";
+      };
+
+      const inputs = Array.from(document.querySelectorAll("input")).filter(
+        (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+      );
+      const hasUsernameLike = inputs.some((input) => {
+        if (input.type === "password") return false;
+        const hint = (
+          (input.name || "") +
+          (input.autocomplete || "") +
+          (input.type || "") +
+          (input.placeholder || "") +
+          (input.getAttribute("aria-label") || "")
+        ).toLowerCase();
+        return (
+          input.name === "username" ||
+          input.autocomplete === "username" ||
+          input.type === "email" ||
+          /(username|email|telefone|phone|celular|usuario|usuário|usuário ou email)/.test(hint)
+        );
+      });
+      const hasPassword = inputs.some(
+        (input) =>
+          input.type === "password" ||
+          input.name === "password" ||
+          input.autocomplete === "current-password",
+      );
+      return hasUsernameLike && hasPassword;
+    });
+  }
+
+  private async isSavedAccountLoginScreen(): Promise<boolean> {
+    if (await this.hasLoginCredentialFields()) {
+      return false;
+    }
+
+    return this.page!.evaluate(() => {
+      const text = (document.body?.innerText || "").toLowerCase();
+      return (
+        text.includes("use another profile") ||
+        text.includes("usar outro perfil") ||
+        text.includes("continue as") ||
+        text.includes("continuar como")
+      );
+    });
+  }
+
+  /**
+   * Na tela "Continue as @usuario", abre o formulario de usuario/senha para o comando `login`.
+   */
+  private async dismissSavedAccountLoginScreen(): Promise<boolean> {
+    if (!(await this.isSavedAccountLoginScreen())) {
+      return false;
+    }
+
+    const switched =
+      (await this.clickFirstActionByText(["use another profile", "usar outro perfil"])) ||
+      (await this.clickFirstActionContainingText(["use another profile", "usar outro perfil"]));
+    if (!switched) {
+      return false;
+    }
+
+    await sleep(1200);
+    await this.page!
+      .waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 })
+      .catch(() => null);
+    await this.page!
+      .waitForFunction(
+        () => {
+          const isVisible = (input: HTMLInputElement): boolean => {
+            if (input.offsetParent === null) return false;
+            const rect = input.getBoundingClientRect();
+            if (rect.width < 20 || rect.height < 4) return false;
+            return window.getComputedStyle(input).visibility !== "hidden";
+          };
+          const inputs = Array.from(document.querySelectorAll("input")).filter(
+            (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+          );
+          const hasUsernameLike = inputs.some((input) => input.type !== "password");
+          const hasPassword = inputs.some((input) => input.type === "password");
+          return hasUsernameLike && hasPassword;
+        },
+        { timeout: 30000 },
+      )
+      .catch(() => null);
+    return true;
+  }
+
+  private async fillInstagramLoginCredentials(
+    username: string,
+    password: string,
+  ): Promise<{ filledUsername: boolean; filledPassword: boolean }> {
+    const result = await this.page!.evaluate(
+      ({ user, pass }) => {
+        const isVisible = (input: HTMLInputElement): boolean => {
+          if (input.offsetParent === null) return false;
+          const rect = input.getBoundingClientRect();
+          if (rect.width < 20 || rect.height < 4) return false;
+          return window.getComputedStyle(input).visibility !== "hidden";
+        };
+
+        const setValue = (input: HTMLInputElement, value: string): void => {
+          input.focus();
+          const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+          if (proto?.set) {
+            proto.set.call(input, value);
+          } else {
+            input.value = value;
+          }
+          input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+          try {
+            input.dispatchEvent(
+              new InputEvent("input", {
+                bubbles: true,
+                cancelable: true,
+                data: value,
+                inputType: "insertText",
+              }),
+            );
+          } catch {
+            // noop
+          }
+          input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        };
+
+        const scoreUsernameInput = (input: HTMLInputElement): number => {
+          const hint = (
+            (input.name || "") +
+            (input.autocomplete || "") +
+            (input.type || "") +
+            (input.placeholder || "") +
+            (input.getAttribute("aria-label") || "")
+          ).toLowerCase();
+          let score = 0;
+          if (input.name === "username") score += 10;
+          if (input.autocomplete === "username") score += 8;
+          if (input.type === "email") score += 6;
+          if (/(username|email|telefone|phone|celular|usuario|usuário)/.test(hint)) score += 5;
+          if (input.type === "password") score -= 100;
+          return score;
+        };
+
+        const inputs = Array.from(document.querySelectorAll("input")).filter(
+          (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+        );
+
+        const usernameInput =
+          inputs
+            .filter((input) => input.type !== "password")
+            .sort((a, b) => scoreUsernameInput(b) - scoreUsernameInput(a))[0] || null;
+        const passwordInput =
+          inputs.find((input) => input.type === "password") ||
+          inputs.find((input) =>
+            /password|senha|current-password/.test(
+              `${input.autocomplete || ""} ${input.name || ""}`.toLowerCase(),
+            ),
+          ) ||
+          null;
+
+        let filledUsername = false;
+        let filledPassword = false;
+        if (usernameInput) {
+          setValue(usernameInput, user);
+          filledUsername = usernameInput.value === user;
+        }
+        if (passwordInput) {
+          setValue(passwordInput, pass);
+          filledPassword = passwordInput.value === pass;
+        }
+        return { filledUsername, filledPassword };
+      },
+      { user: username, pass: password },
+    );
+
+    return result;
+  }
+
+  private async fillLoginFieldWithKeyboard(
+    selectors: string[],
+    value: string,
+  ): Promise<boolean> {
+    for (const selector of selectors) {
+      const input = await this.page!.$(selector);
+      if (!input) continue;
+      const visible = await this.page!.evaluate((el) => {
+        if (!(el instanceof HTMLInputElement)) return false;
+        if (el.offsetParent === null) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width >= 20 && rect.height >= 4;
+      }, input);
+      if (!visible) continue;
+
+      await input.click({ clickCount: 3 }).catch(() => null);
+      await this.page!.keyboard.down("Control").catch(() => null);
+      await this.page!.keyboard.press("KeyA").catch(() => null);
+      await this.page!.keyboard.up("Control").catch(() => null);
+      await this.page!.keyboard.press("Backspace").catch(() => null);
+      await input.type(value, { delay: 35 });
+      const currentValue = await this.page!.evaluate((el) => {
+        return el instanceof HTMLInputElement ? el.value : "";
+      }, input);
+      if (currentValue === value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async clickLoginSubmit(): Promise<boolean> {
+    const clickedByText =
+      (await this.clickFirstActionByText(["log in", "entrar"])) ||
+      (await this.clickFirstActionContainingText(["log in", "entrar"]));
+    if (clickedByText) {
+      return true;
+    }
+
+    const selectors = [
+      'button[type="submit"]',
+      "form button",
+      'form div[role="button"]',
+      'div[role="button"][tabindex="0"]',
+    ];
+    for (const selector of selectors) {
+      const button = await this.page!.$(selector);
+      if (!button) continue;
+      const label = await this.page!.evaluate((el) => (el.textContent || "").trim().toLowerCase(), button);
+      if (label && !/(log in|entrar|login)/.test(label)) {
+        continue;
+      }
+      await button.click().catch(() => null);
+      return true;
+    }
+    return false;
+  }
+
+  private readonly emailCodeInputXpaths = [
+    '//*[@id="_r_h_"]',
+  ] as const;
+
+  private readonly emailCodeContinueButtonXpaths = [
+    '//*[@id="mount_0_0_+R"]/div/div/div[2]/div/div/div[1]/div[1]/div[2]/div/div/div/div/div[3]/div/div[2]/div/div/div',
+    '//*[@id="mount_0_0_6J"]/div/div/div[2]/div/div/div[1]/div[1]/div[2]/div/div/div/div/div[3]/div/div[2]/div/div',
+  ] as const;
+
+  private readonly emailCodeContinueMountSuffix =
+    "/div/div/div[2]/div/div/div[1]/div[1]/div[2]/div/div/div/div/div[3]/div/div[2]/div/div/div";
+
+  private async fillInputByXPath(xpath: string, value: string): Promise<boolean> {
+    return this.page!.evaluate(
+      ({ targetXPath, code }) => {
+        const found = document.evaluate(
+          targetXPath,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null,
+        ).singleNodeValue;
+        if (!found) return false;
+
+        const input =
+          found instanceof HTMLInputElement
+            ? found
+            : found instanceof Element
+              ? found.querySelector("input")
+              : null;
+        if (!(input instanceof HTMLInputElement)) return false;
+
+        input.focus();
+        const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+        if (proto?.set) {
+          proto.set.call(input, code);
+        } else {
+          input.value = code;
+        }
+        input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        try {
+          input.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              cancelable: true,
+              data: code,
+              inputType: "insertText",
+            }),
+          );
+        } catch {
+          // noop
+        }
+        input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        return input.value === code;
+      },
+      { targetXPath: xpath, code: value },
+    );
+  }
+
+  private async fillControlledInputHandle(
+    input: import("puppeteer").ElementHandle<Element>,
+    value: string,
+  ): Promise<boolean> {
+    return this.page!.evaluate(
+      (el, code) => {
+        if (!(el instanceof HTMLInputElement)) return false;
+        el.focus();
+        const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+        if (proto?.set) {
+          proto.set.call(el, code);
+        } else {
+          el.value = code;
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        try {
+          el.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              cancelable: true,
+              data: code,
+              inputType: "insertText",
+            }),
+          );
+        } catch {
+          // noop
+        }
+        el.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        return el.value === code;
+      },
+      input,
+      value,
+    );
+  }
+
   private async clickXPathIfExists(xpath: string): Promise<boolean> {
     return this.page!.evaluate((targetXPath) => {
       const result = document.evaluate(
@@ -281,9 +641,153 @@ export class InstaConnect {
       );
       const node = result.singleNodeValue as HTMLElement | null;
       if (!node) return false;
-      node.click();
+
+      const clickTarget =
+        node.matches('button, div[role="button"], a[role="button"]') ||
+        node.matches("button") ||
+        node.getAttribute("role") === "button"
+          ? node
+          : (node.querySelector(
+              'button, div[role="button"], a[role="button"]',
+            ) as HTMLElement | null) || node;
+
+      clickTarget.scrollIntoView({ block: "center", inline: "center" });
+      clickTarget.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      clickTarget.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      clickTarget.click();
       return true;
     }, xpath);
+  }
+
+  private async clickElementByXPath(xpath: string): Promise<boolean> {
+    const handle = await this.page!.evaluateHandle((targetXPath) => {
+      return document.evaluate(
+        targetXPath,
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null,
+      ).singleNodeValue;
+    }, xpath);
+
+    const hasTarget = await this.page!.evaluate((node) => node instanceof HTMLElement, handle);
+    if (!hasTarget) {
+      await handle.dispose();
+      return false;
+    }
+
+    const clickedInPage = await this.page!.evaluate((node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const clickTarget =
+        node.matches("button") ||
+        node.getAttribute("role") === "button" ||
+        node.matches('div[role="button"], a[role="button"]')
+          ? node
+          : (node.querySelector(
+              'button, div[role="button"], a[role="button"]',
+            ) as HTMLElement | null) || node;
+
+      clickTarget.scrollIntoView({ block: "center", inline: "center" });
+      clickTarget.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      clickTarget.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      clickTarget.click();
+      return true;
+    }, handle);
+
+    const element = handle.asElement() as import("puppeteer").ElementHandle<Element> | null;
+    if (element) {
+      try {
+        await element.click({ delay: 40 });
+      } catch {
+        const box = await element.boundingBox();
+        if (box) {
+          await this.page!.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        }
+      }
+    }
+
+    await handle.dispose();
+    return clickedInPage || Boolean(element);
+  }
+
+  private async clickEmailCodeContinueByMountSuffix(): Promise<boolean> {
+    return this.page!.evaluate((suffix) => {
+      const actionTexts = ["continuar", "continue", "next", "confirm", "confirmar"];
+      const mounts = Array.from(document.querySelectorAll<HTMLElement>('[id^="mount_0_0_"]'));
+      for (const mount of mounts) {
+        const xpath = `//*[@id="${mount.id}"]${suffix}`;
+        const node = document.evaluate(
+          xpath,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null,
+        ).singleNodeValue as HTMLElement | null;
+        if (!node) continue;
+
+        const candidates = [
+          node,
+          ...Array.from(node.querySelectorAll<HTMLElement>('button, div[role="button"], a[role="button"]')),
+        ];
+        for (const candidate of candidates) {
+          const text = (candidate.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+          if (!text) continue;
+          if (actionTexts.some((label) => text === label || text.includes(label))) {
+            candidate.scrollIntoView({ block: "center", inline: "center" });
+            candidate.click();
+            return true;
+          }
+        }
+
+        node.scrollIntoView({ block: "center", inline: "center" });
+        node.click();
+        return true;
+      }
+      return false;
+    }, this.emailCodeContinueMountSuffix);
+  }
+
+  private async clickEmailCodeContinueNearInput(): Promise<boolean> {
+    return this.page!.evaluate(() => {
+      const input =
+        document.querySelector<HTMLInputElement>("#_r_h_") ||
+        document.querySelector<HTMLInputElement>('input[aria-label*="code" i]') ||
+        document.querySelector<HTMLInputElement>('input[placeholder*="code" i]');
+      if (!input) return false;
+
+      let container: HTMLElement | null = input;
+      for (let depth = 0; depth < 14 && container; depth += 1) {
+        container = container.parentElement;
+        if (!container) break;
+
+        const buttons = Array.from(
+          container.querySelectorAll<HTMLElement>('button, div[role="button"], a[role="button"]'),
+        );
+        for (const button of buttons) {
+          const text = (button.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+          if (text === "continuar" || text === "continue" || text === "next") {
+            button.scrollIntoView({ block: "center", inline: "center" });
+            button.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+  }
+
+  private async clickEmailCodeContinueButton(): Promise<boolean> {
+    for (const xpath of this.emailCodeContinueButtonXpaths) {
+      if (await this.clickElementByXPath(xpath)) {
+        return true;
+      }
+    }
+
+    if (await this.clickEmailCodeContinueByMountSuffix()) {
+      return true;
+    }
+
+    return this.clickEmailCodeContinueNearInput();
   }
 
   private async handlePostLoginPrompts(): Promise<void> {
@@ -324,9 +828,49 @@ export class InstaConnect {
     }
   }
 
+  private isIncompleteLoginUrl(url: string): boolean {
+    const normalizedUrl = url.toLowerCase();
+    return (
+      normalizedUrl.includes("/accounts/login") ||
+      normalizedUrl.includes("/challenge/") ||
+      normalizedUrl.includes("/auth_platform/") ||
+      normalizedUrl.includes("/accounts/login/two_factor") ||
+      normalizedUrl.includes("/accounts/two_factor")
+    );
+  }
+
+  private isLoggedInUrl(url: string): boolean {
+    return url.includes("instagram.com") && !this.isIncompleteLoginUrl(url);
+  }
+
+  private challengeMessageForType(type: LoginChallengeType): string {
+    if (type === "email_code") {
+      return "Codigo enviado por e-mail necessario. Informe o codigo recebido para concluir o login.";
+    }
+    if (type === "two_factor") {
+      return "Autenticacao em duas etapas necessaria. Informe o codigo recebido para concluir o login.";
+    }
+    return "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.";
+  }
+
+  private resolveChallengeTypeFromUrl(normalizedUrl: string): LoginChallengeType {
+    const hasTwoFactorUrl =
+      normalizedUrl.includes("/accounts/login/two_factor") || normalizedUrl.includes("/accounts/two_factor");
+    if (hasTwoFactorUrl) {
+      return "two_factor";
+    }
+    if (normalizedUrl.includes("/auth_platform/")) {
+      return "email_code";
+    }
+    if (normalizedUrl.includes("/challenge/")) {
+      return "security_code";
+    }
+    return "unknown";
+  }
+
   private async detectLoginChallenge(): Promise<{
     required: boolean;
-    type: "security_code" | "two_factor" | "unknown";
+    type: LoginChallengeType;
     message: string;
   }> {
     const page = this.page;
@@ -342,42 +886,55 @@ export class InstaConnect {
     const normalizedUrl = currentUrl.toLowerCase();
     const hasTwoFactorUrl =
       normalizedUrl.includes("/accounts/login/two_factor") || normalizedUrl.includes("/accounts/two_factor");
-    const hasChallengeUrl = normalizedUrl.includes("/challenge/") || hasTwoFactorUrl;
-    const type: "security_code" | "two_factor" | "unknown" = hasTwoFactorUrl
-      ? "two_factor"
-      : hasChallengeUrl
-        ? "security_code"
-        : "unknown";
+    const hasAuthPlatformUrl = normalizedUrl.includes("/auth_platform/");
+    const hasLegacyChallengeUrl = normalizedUrl.includes("/challenge/") || hasTwoFactorUrl;
+    const hasKnownChallengeUrl = hasLegacyChallengeUrl || hasAuthPlatformUrl;
+    const urlChallengeType = this.resolveChallengeTypeFromUrl(normalizedUrl);
 
-    // Em rotas de challenge/2FA a flag precisa ser verdadeira, mesmo que o DOM
+    // Em rotas de challenge/2FA/auth platform a flag precisa ser verdadeira, mesmo que o DOM
     // ainda nao tenha carregado os inputs/labels quando a checagem ocorrer.
-    if (hasChallengeUrl) {
+    if (hasKnownChallengeUrl) {
       return {
         required: true,
-        type,
-        message:
-          "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.",
+        type: urlChallengeType,
+        message: this.challengeMessageForType(urlChallengeType),
       };
     }
 
     const hasCodeInput =
+      Boolean(await page.$("#_r_h_")) ||
       Boolean(await page.$('input[name="verificationCode"]')) ||
       Boolean(await page.$('input[name="security_code"]')) ||
       Boolean(await page.$('input[autocomplete="one-time-code"]')) ||
       Boolean(await page.$('input[inputmode="numeric"]')) ||
-      Boolean(await page.$('input[type="tel"]'));
-    const hasCodePrompt = await page.evaluate(() => {
+      Boolean(await page.$('input[type="tel"]')) ||
+      Boolean(await page.$('input[aria-label*="code" i]')) ||
+      Boolean(await page.$('input[placeholder*="code" i]')) ||
+      Boolean(await page.$('form input[type="text"]'));
+    const promptFlags = await page.evaluate(() => {
       const text = (document.body?.innerText || "").toLowerCase();
-      return (
-        text.includes("security code") ||
-        text.includes("two-factor") ||
-        text.includes("two factor") ||
-        text.includes("código de segurança") ||
-        text.includes("codigo de seguranca")
-      );
+      return {
+        hasSecurityCodePrompt:
+          text.includes("security code") ||
+          text.includes("two-factor") ||
+          text.includes("two factor") ||
+          text.includes("código de segurança") ||
+          text.includes("codigo de seguranca"),
+        hasEmailCodePrompt:
+          text.includes("check your email") ||
+          text.includes("enter the code we sent") ||
+          text.includes("verifique seu e-mail") ||
+          text.includes("verifique seu email") ||
+          text.includes("confira seu e-mail") ||
+          text.includes("confira seu email") ||
+          text.includes("digite o código que enviamos") ||
+          text.includes("digite o codigo que enviamos") ||
+          text.includes("digite o código enviado") ||
+          text.includes("digite o codigo enviado"),
+      };
     });
 
-    if (!hasChallengeUrl && !hasCodeInput && !hasCodePrompt) {
+    if (!hasKnownChallengeUrl && !hasCodeInput && !promptFlags.hasSecurityCodePrompt && !promptFlags.hasEmailCodePrompt) {
       return {
         required: false,
         type: "unknown",
@@ -385,11 +942,16 @@ export class InstaConnect {
       };
     }
 
+    const type: LoginChallengeType = promptFlags.hasEmailCodePrompt
+      ? "email_code"
+      : promptFlags.hasSecurityCodePrompt
+        ? "security_code"
+        : "unknown";
+
     return {
       required: true,
       type,
-      message:
-        "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.",
+      message: this.challengeMessageForType(type),
     };
   }
 
@@ -408,23 +970,21 @@ export class InstaConnect {
     }
     const looksLikeChallengeUrl =
       normalizedUrl.includes("/challenge/") ||
+      normalizedUrl.includes("/auth_platform/") ||
       normalizedUrl.includes("/accounts/login/two_factor") ||
       normalizedUrl.includes("/accounts/two_factor");
     if (looksLikeChallengeUrl) {
+      const challengeType = this.resolveChallengeTypeFromUrl(normalizedUrl);
       return {
         success: false,
         url: currentUrl,
         challengeRequired: true,
-        challengeType: normalizedUrl.includes("two_factor") ? "two_factor" : "security_code",
-        message:
-          defaultMessage || "Desafio de seguranca detectado. Informe o codigo recebido para concluir o login.",
+        challengeType,
+        message: defaultMessage || this.challengeMessageForType(challengeType),
       };
     }
 
-    const onHome =
-      currentUrl.includes("instagram.com") &&
-      !currentUrl.includes("/accounts/login") &&
-      !currentUrl.includes("/challenge/");
+    const onHome = this.isLoggedInUrl(currentUrl);
     return {
       success: onHome,
       url: currentUrl,
@@ -437,7 +997,7 @@ export class InstaConnect {
     currentUrl: string | null;
     loggedIn: boolean;
     challengeRequired: boolean;
-    challengeType?: "security_code" | "two_factor" | "unknown";
+    challengeType?: LoginChallengeType;
     message?: string;
   }> {
     const page = this.page;
@@ -452,10 +1012,7 @@ export class InstaConnect {
 
     const currentUrl = page.url();
     const challenge = await this.detectLoginChallenge();
-    const loggedIn =
-      currentUrl.includes("instagram.com") &&
-      !currentUrl.includes("/accounts/login") &&
-      !challenge.required;
+    const loggedIn = this.isLoggedInUrl(currentUrl) && !challenge.required;
 
     return {
       browserOpen: true,
@@ -467,17 +1024,33 @@ export class InstaConnect {
   }
 
   private async fillSecurityCodeInput(code: string): Promise<boolean> {
+    for (const xpath of this.emailCodeInputXpaths) {
+      if (await this.fillInputByXPath(xpath, code)) {
+        return true;
+      }
+    }
+
+    const emailCodeInput = await this.page!.$("#_r_h_");
+    if (emailCodeInput && (await this.fillControlledInputHandle(emailCodeInput, code))) {
+      return true;
+    }
+
     const selectors = [
       'input[name="verificationCode"]',
       'input[name="security_code"]',
       'input[autocomplete="one-time-code"]',
       'input[inputmode="numeric"]',
       'input[type="tel"]',
+      'input[aria-label*="code" i]',
+      'input[placeholder*="code" i]',
       'form input[type="text"]',
     ];
     for (const selector of selectors) {
       const input = await this.page!.$(selector);
       if (!input) continue;
+      if (await this.fillControlledInputHandle(input, code)) {
+        return true;
+      }
       await input.click({ clickCount: 3 }).catch(() => null);
       await this.page!.keyboard.press("Backspace").catch(() => null);
       await input.type(code, { delay: 20 }).catch(() => null);
@@ -486,6 +1059,7 @@ export class InstaConnect {
 
     return this.page!.evaluate((value) => {
       const xpaths = [
+        '//*[@id="_r_h_"]',
         '//*[@id="mount_0_0_5g"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[2]/div',
         '//*[@id="mount_0_0_5g"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[1]/div/label/input',
       ];
@@ -495,10 +1069,27 @@ export class InstaConnect {
           (node instanceof HTMLInputElement ? node : node.querySelector("input")) || null;
         if (!input) return false;
         input.focus();
-        input.value = value;
+        const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+        if (proto?.set) {
+          proto.set.call(input, value);
+        } else {
+          input.value = value;
+        }
         input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        try {
+          input.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              cancelable: true,
+              data: value,
+              inputType: "insertText",
+            }),
+          );
+        } catch {
+          // noop
+        }
         input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-        return true;
+        return input.value === value;
       };
       for (const xpath of xpaths) {
         const found = document.evaluate(
@@ -515,7 +1106,67 @@ export class InstaConnect {
   }
 
   private async clickSecurityCodeConfirm(): Promise<boolean> {
-    // Prioriza o botao de confirmacao DENTRO do form do codigo.
+    if (await this.clickEmailCodeContinueButton()) {
+      return true;
+    }
+
+    const codeFormActionTexts = [
+      "next",
+      "continue",
+      "continuar",
+      "confirm",
+      "confirmar",
+      "avançar",
+      "avancar",
+    ];
+
+    const clickedInsideCodeForm = await this.page!.evaluate((actionTexts) => {
+      const inputSelectors = [
+        "#_r_h_",
+        'input[name="verificationCode"]',
+        'input[name="security_code"]',
+        'input[autocomplete="one-time-code"]',
+        'input[inputmode="numeric"]',
+        'input[type="tel"]',
+        'input[aria-label*="code" i]',
+        'input[placeholder*="code" i]',
+        'form input[type="text"]',
+      ];
+      const inputs = new Set<HTMLInputElement>();
+      for (const selector of inputSelectors) {
+        for (const input of Array.from(document.querySelectorAll<HTMLInputElement>(selector))) {
+          inputs.add(input);
+        }
+      }
+
+      const matchesAction = (text: string): boolean =>
+        actionTexts.some((candidate) => text === candidate || text.includes(candidate));
+
+      for (const input of inputs) {
+        const form = input.closest("form");
+        if (!form) continue;
+
+        const candidates = Array.from(
+          form.querySelectorAll<HTMLElement>(
+            'button[type="submit"], button, div[role="button"], a[role="button"]',
+          ),
+        );
+
+        for (const el of candidates) {
+          const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+          if (matchesAction(text)) {
+            el.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    }, codeFormActionTexts);
+    if (clickedInsideCodeForm) {
+      return true;
+    }
+
+    // Prioriza o botao de confirmacao DENTRO do form do codigo (fluxo legado).
     const clickedInsideVerificationForm = await this.page!.evaluate(() => {
       const input = document.querySelector<HTMLInputElement>('input[name="verificationCode"]');
       const form = input?.closest("form") || null;
@@ -581,30 +1232,36 @@ export class InstaConnect {
       return true;
     }
 
-    const clickedByExactText = await this.clickFirstActionByText(["confirm", "confirmar"]);
+    const clickedByExactText = await this.clickFirstActionByText(codeFormActionTexts);
     if (clickedByExactText) {
       return true;
     }
 
-    const clickedByContainsText = await this.page!.evaluate(() => {
+    const clickedByContainsText = await this.page!.evaluate((actionTexts) => {
       const candidates = Array.from(
         document.querySelectorAll("button, div[role='button'], a[role='button']"),
       ) as HTMLElement[];
       for (const el of candidates) {
         const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
         if (!text) continue;
-        if (text.includes("confirm") || text.includes("confirmar")) {
+        if (actionTexts.some((candidate) => text.includes(candidate))) {
           el.click();
           return true;
         }
       }
       return false;
-    });
+    }, codeFormActionTexts);
     if (clickedByContainsText) {
       return true;
     }
 
     return (
+      (await this.clickElementByXPath(
+        '//*[@id="mount_0_0_+R"]/div/div/div[2]/div/div/div[1]/div[1]/div[2]/div/div/div/div/div[3]/div/div[2]/div/div/div',
+      )) ||
+      (await this.clickElementByXPath(
+        '//*[@id="mount_0_0_6J"]/div/div/div[2]/div/div/div[1]/div[1]/div[2]/div/div/div/div/div[3]/div/div[2]/div/div',
+      )) ||
       (await this.clickXPathIfExists(
         '//*[@id="mount_0_0_AQ"]/div/div/div[2]/div/div/div[1]/div[1]/div/section/main/div/div/div[1]/div[2]/form/div[2]/div',
       )) ||
@@ -622,7 +1279,18 @@ export class InstaConnect {
 
   public async login(username: string, password: string): Promise<LoginResult> {
     const loginUrl = await this.openLoginPage();
-    const alreadyLogged = !loginUrl.includes("/accounts/login");
+    const pendingChallenge = await this.detectLoginChallenge();
+    if (pendingChallenge.required) {
+      return {
+        success: false,
+        url: loginUrl,
+        challengeRequired: true,
+        challengeType: pendingChallenge.type,
+        message: pendingChallenge.message,
+      };
+    }
+
+    const alreadyLogged = this.isLoggedInUrl(loginUrl);
     if (alreadyLogged) {
       return {
         success: true,
@@ -632,7 +1300,24 @@ export class InstaConnect {
 
     try {
       await this.acceptCookiesIfPresent();
-      await this.page!.waitForSelector("form", { timeout: 60000 });
+      if (!(await this.hasLoginCredentialFields())) {
+        await this.dismissSavedAccountLoginScreen();
+      }
+      await this.page!.waitForFunction(
+        () => {
+          const isVisible = (input: HTMLInputElement): boolean => {
+            if (input.offsetParent === null) return false;
+            const rect = input.getBoundingClientRect();
+            if (rect.width < 20 || rect.height < 4) return false;
+            return window.getComputedStyle(input).visibility !== "hidden";
+          };
+          const inputs = Array.from(document.querySelectorAll("input")).filter(
+            (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+          );
+          return inputs.some((input) => input.type !== "password") && inputs.some((input) => input.type === "password");
+        },
+        { timeout: 60000 },
+      );
     } catch {
       const currentUrl = this.page!.url();
       const pageTitle = await this.page!.title();
@@ -641,44 +1326,56 @@ export class InstaConnect {
       );
     }
 
-    const usernameElement =
-      (await this.page!.$('input[name="username"]')) ||
-      (await this.page!.$('input[autocomplete="username"]')) ||
-      (await this.page!.$('input[type="text"]'));
+    let fillResult = await this.fillInstagramLoginCredentials(username, password);
+    if (!fillResult.filledUsername) {
+      const filled = await this.fillLoginFieldWithKeyboard(
+        [
+          'input[name="username"]',
+          'input[autocomplete="username"]',
+          'input[type="email"]',
+          'input[autocomplete="email"]',
+          'input[aria-label*="email" i]',
+          'input[aria-label*="username" i]',
+          'input[aria-label*="telefone" i]',
+          'input[aria-label*="phone" i]',
+        ],
+        username,
+      );
+      fillResult = { ...fillResult, filledUsername: filled };
+    }
+    if (!fillResult.filledPassword) {
+      const filled = await this.fillLoginFieldWithKeyboard(
+        [
+          'input[name="password"]',
+          'input[autocomplete="current-password"]',
+          'input[type="password"]',
+        ],
+        password,
+      );
+      fillResult = { ...fillResult, filledPassword: filled };
+    }
 
-    const passwordElement =
-      (await this.page!.$('input[name="password"]')) ||
-      (await this.page!.$('input[autocomplete="current-password"]')) ||
-      (await this.page!.$('input[type="password"]'));
-
-    const submitElement =
-      (await this.page!.$('button[type="submit"]')) ||
-      (await this.page!.$("form button")) ||
-      (await this.page!.$('form div[role="button"]'));
-
-    if (!usernameElement || !passwordElement || !submitElement) {
+    if (!fillResult.filledUsername || !fillResult.filledPassword) {
       const currentUrl = this.page!.url();
       const pageTitle = await this.page!.title();
       const screenshotDir = path.resolve(process.cwd(), ".debug");
       await fs.mkdir(screenshotDir, { recursive: true });
-      const screenshotPath = path.join(screenshotDir, "login-not-found.png");
+      const screenshotPath = path.join(screenshotDir, "login-fill-failed.png");
       await this.page!.screenshot({ path: screenshotPath, fullPage: true }).catch(() => null);
       throw new Error(
-        `Campos de login nao encontrados. url=${currentUrl} title=${pageTitle} screenshot=${screenshotPath}`,
+        `Nao foi possivel preencher usuario/senha. url=${currentUrl} title=${pageTitle} screenshot=${screenshotPath}`,
       );
     }
 
-    await usernameElement.click({ clickCount: 3 });
-    await this.page!.keyboard.press("Backspace");
-    await usernameElement.type(username, { delay: 30 });
-    await passwordElement.click({ clickCount: 3 });
-    await this.page!.keyboard.press("Backspace");
-    await passwordElement.type(password, { delay: 30 });
+    await sleep(400);
+    const clickedSubmit = await this.clickLoginSubmit();
+    if (!clickedSubmit) {
+      throw new Error("Botao de login (Log in / Entrar) nao encontrado.");
+    }
 
-    await Promise.all([
-      this.page!.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 }).catch(() => null),
-      submitElement.click(),
-    ]);
+    await this.page!
+      .waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 })
+      .catch(() => null);
 
     await this.handlePostLoginPrompts();
 
@@ -702,6 +1399,7 @@ export class InstaConnect {
       throw new Error("Campo de codigo de seguranca nao encontrado.");
     }
 
+    await sleep(500);
     const clicked = await this.clickSecurityCodeConfirm();
     if (!clicked) {
       throw new Error("Botao de confirmacao do codigo nao encontrado.");

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import path from "node:path";
 import readline from "node:readline";
 import { config as loadEnv } from "dotenv";
@@ -25,6 +26,39 @@ function buildCreateSessionPayload(sessionId?: string): { sessionId?: string; he
   if (sessionId) out.sessionId = sessionId;
   if (envHeadless !== undefined) out.headless = envHeadless;
   return out;
+}
+
+/** Bip quando chega mensagem relevante em modo `mto:` (PowerShell `[console]::Beep` no Windows). */
+function beepIncomingMessageTone(): void {
+  const off = process.env.INSTA_MTO_BEEP;
+  if (off !== undefined && ["0", "false", "no", "off"].includes(String(off).trim().toLowerCase())) return;
+
+  if (process.platform === "win32") {
+    try {
+      const child = spawn(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "[console]::Beep(880,120)",
+        ],
+        { detached: true, stdio: "ignore", windowsHide: true },
+      );
+      child.unref();
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  try {
+    process.stdout.write("\x07");
+  } catch {
+    /* noop */
+  }
 }
 
 const serverUrl = process.argv[2] || "http://localhost:4010";
@@ -510,8 +544,10 @@ socket.on("dmTap:newMessage", (payload) => {
           : null;
       console.log(sid != null ? `[AUDIO #${sid}] ${playbackUrl}` : `[AUDIO] ${playbackUrl}`);
     }
+    const imageViewUrlTrim = String(data?.imageViewUrl ?? "").trim();
     // Nao repete o link /image/... a cada evento: use /foto (resolveImageMessage) para ver a URL.
-    if (formatted || playbackUrl || String(data?.imageViewUrl ?? "").trim()) {
+    if (formatted || playbackUrl || imageViewUrlTrim) {
+      beepIncomingMessageTone();
       rl.prompt(true);
       return;
     }
