@@ -1,4 +1,4 @@
-﻿import puppeteer, { Browser, type LaunchOptions, Page } from "puppeteer";
+﻿import puppeteer, { Browser, type ElementHandle, type LaunchOptions, Page } from "puppeteer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DM_TAP_SOURCE } from "../browser/dm-tap.source";
@@ -221,17 +221,24 @@ export class InstaConnect {
     return page;
   }
 
-  public async openLoginPage(): Promise<string> {
+  public async openLoginPage(options?: { force?: boolean }): Promise<string> {
     await this.launch();
+    const page = this.page!;
+    const currentUrl = page.url();
+    const onLoginRoute =
+      currentUrl.includes("/accounts/login") || currentUrl.includes("/login/");
+    if (!options?.force && onLoginRoute) {
+      return currentUrl;
+    }
 
-    await this.page!.goto("https://www.instagram.com/accounts/login/", {
+    await page.goto("https://www.instagram.com/accounts/login/", {
       waitUntil: "networkidle2",
     });
 
-    return this.page!.url();
+    return page.url();
   }
 
-  private async acceptCookiesIfPresent(): Promise<void> {
+  private async acceptCookiesIfPresent(): Promise<boolean> {
     const selectors = [
       'button[tabindex="0"]',
       'button[type="button"]',
@@ -248,10 +255,11 @@ export class InstaConnect {
           text.includes("aceitar tudo");
         if (shouldClick) {
           await button.click().catch(() => null);
-          return;
+          return true;
         }
       }
     }
+    return false;
   }
 
   private async clickFirstActionByText(candidates: string[]): Promise<boolean> {
@@ -389,6 +397,197 @@ export class InstaConnect {
     return true;
   }
 
+  private async waitForLoginCredentialFields(timeoutMs = 60000): Promise<void> {
+    await this.page!.waitForFunction(
+      () => {
+        const isVisible = (input: HTMLInputElement): boolean => {
+          if (input.offsetParent === null) return false;
+          const rect = input.getBoundingClientRect();
+          if (rect.width < 20 || rect.height < 4) return false;
+          return window.getComputedStyle(input).visibility !== "hidden";
+        };
+        const inputs = Array.from(document.querySelectorAll("input")).filter(
+          (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+        );
+        return inputs.some((input) => input.type !== "password") && inputs.some((input) => input.type === "password");
+      },
+      { timeout: timeoutMs },
+    );
+  }
+
+  /** Cookie banner, tela "Continuar como" e hidratacao React antes de preencher credenciais. */
+  private async prepareLoginForm(): Promise<void> {
+    if (await this.acceptCookiesIfPresent()) {
+      await sleep(1500);
+    }
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await this.dismissSavedAccountLoginScreen();
+      if (await this.hasLoginCredentialFields()) {
+        break;
+      }
+      await sleep(800);
+    }
+
+    await this.waitForLoginCredentialFields();
+    // Inputs podem existir no DOM antes dos handlers React estarem prontos.
+    await sleep(600);
+  }
+
+  private loginUsernameFieldSelectors(): string[] {
+    return [
+      'input[name="username"]',
+      'input[autocomplete="username"]',
+      'input[type="email"]',
+      'input[autocomplete="email"]',
+      'input[aria-label*="email" i]',
+      'input[aria-label*="username" i]',
+      'input[aria-label*="telefone" i]',
+      'input[aria-label*="phone" i]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="username" i]',
+      'input[placeholder*="telefone" i]',
+      'input[placeholder*="phone" i]',
+    ];
+  }
+
+  private loginPasswordFieldSelectors(): string[] {
+    return [
+      'input[name="password"]',
+      'input[autocomplete="current-password"]',
+      'input[type="password"]',
+    ];
+  }
+
+  private async readLoginFieldValues(): Promise<{ username: string; password: string }> {
+    return this.page!.evaluate(() => {
+      const isVisible = (input: HTMLInputElement): boolean => {
+        if (input.offsetParent === null) return false;
+        const rect = input.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 4) return false;
+        return window.getComputedStyle(input).visibility !== "hidden";
+      };
+      const scoreUsernameInput = (input: HTMLInputElement): number => {
+        const hint = (
+          (input.name || "") +
+          (input.autocomplete || "") +
+          (input.type || "") +
+          (input.placeholder || "") +
+          (input.getAttribute("aria-label") || "")
+        ).toLowerCase();
+        let score = 0;
+        if (input.name === "username") score += 10;
+        if (input.autocomplete === "username") score += 8;
+        if (input.type === "email") score += 6;
+        if (/(username|email|telefone|phone|celular|usuario|usuário)/.test(hint)) score += 5;
+        return score;
+      };
+      const inputs = Array.from(document.querySelectorAll("input")).filter(
+        (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+      );
+      const usernameInput =
+        inputs
+          .filter((input) => input.type !== "password")
+          .sort((a, b) => scoreUsernameInput(b) - scoreUsernameInput(a))[0] || null;
+      const passwordInput = inputs.find((input) => input.type === "password") || null;
+      return {
+        username: usernameInput?.value || "",
+        password: passwordInput?.value || "",
+      };
+    });
+  }
+
+  private async fillFirstVisibleLoginFieldWithKeyboard(
+    kind: "username" | "password",
+    value: string,
+  ): Promise<boolean> {
+    const handle = await this.page!.evaluateHandle((fieldKind) => {
+      const isVisible = (input: HTMLInputElement): boolean => {
+        if (input.offsetParent === null) return false;
+        const rect = input.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 4) return false;
+        return window.getComputedStyle(input).visibility !== "hidden";
+      };
+      const scoreUsernameInput = (input: HTMLInputElement): number => {
+        const hint = (
+          (input.name || "") +
+          (input.autocomplete || "") +
+          (input.type || "") +
+          (input.placeholder || "") +
+          (input.getAttribute("aria-label") || "")
+        ).toLowerCase();
+        let score = 0;
+        if (input.name === "username") score += 10;
+        if (input.autocomplete === "username") score += 8;
+        if (input.type === "email") score += 6;
+        if (/(username|email|telefone|phone|celular|usuario|usuário)/.test(hint)) score += 5;
+        return score;
+      };
+      const inputs = Array.from(document.querySelectorAll("input")).filter(
+        (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
+      );
+      if (fieldKind === "password") {
+        return inputs.find((input) => input.type === "password") || null;
+      }
+      return (
+        inputs
+          .filter((input) => input.type !== "password")
+          .sort((a, b) => scoreUsernameInput(b) - scoreUsernameInput(a))[0] || null
+      );
+    }, kind);
+    const element = handle.asElement() as ElementHandle<Element> | null;
+    if (!element) {
+      await handle.dispose();
+      return false;
+    }
+
+    const filled = await this.fillLoginInputHandle(element, value);
+    await handle.dispose();
+    return filled;
+  }
+
+  private async fillLoginCredentialsReliable(
+    username: string,
+    password: string,
+  ): Promise<{ filledUsername: boolean; filledPassword: boolean }> {
+    const usernameSelectors = this.loginUsernameFieldSelectors();
+    const passwordSelectors = this.loginPasswordFieldSelectors();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(1000);
+      }
+
+      let filledUsername = await this.fillLoginFieldWithKeyboard(usernameSelectors, username);
+      let filledPassword = await this.fillLoginFieldWithKeyboard(passwordSelectors, password);
+
+      if (!filledUsername) {
+        filledUsername = await this.fillFirstVisibleLoginFieldWithKeyboard("username", username);
+      }
+      if (!filledPassword) {
+        filledPassword = await this.fillFirstVisibleLoginFieldWithKeyboard("password", password);
+      }
+
+      if (!filledUsername || !filledPassword) {
+        const evalFill = await this.fillInstagramLoginCredentials(username, password);
+        filledUsername = filledUsername || evalFill.filledUsername;
+        filledPassword = filledPassword || evalFill.filledPassword;
+      }
+
+      await sleep(300);
+      const current = await this.readLoginFieldValues();
+      if (current.username === username && current.password === password) {
+        return { filledUsername: true, filledPassword: true };
+      }
+    }
+
+    const last = await this.readLoginFieldValues();
+    return {
+      filledUsername: last.username === username,
+      filledPassword: last.password === password,
+    };
+  }
+
   private async fillInstagramLoginCredentials(
     username: string,
     password: string,
@@ -478,6 +677,39 @@ export class InstaConnect {
     return result;
   }
 
+  private async typeIntoInputHandle(
+    input: import("puppeteer").ElementHandle<Element>,
+    value: string,
+  ): Promise<boolean> {
+    await input.click({ clickCount: 3 }).catch(() => null);
+    await sleep(150);
+    await this.page!.keyboard.down("Control").catch(() => null);
+    await this.page!.keyboard.press("KeyA").catch(() => null);
+    await this.page!.keyboard.up("Control").catch(() => null);
+    await this.page!.keyboard.press("Backspace").catch(() => null);
+    await this.page!.keyboard.type(value, { delay: 40 });
+    const currentValue = await this.page!.evaluate((el) => {
+      return el instanceof HTMLInputElement ? el.value : "";
+    }, input);
+    return currentValue === value;
+  }
+
+  private async fillLoginInputHandle(
+    input: import("puppeteer").ElementHandle<Element>,
+    value: string,
+  ): Promise<boolean> {
+    if (await this.fillControlledInputHandle(input, value)) {
+      await sleep(150);
+      const controlledValue = await this.page!.evaluate((el) => {
+        return el instanceof HTMLInputElement ? el.value : "";
+      }, input);
+      if (controlledValue === value) {
+        return true;
+      }
+    }
+    return this.typeIntoInputHandle(input, value);
+  }
+
   private async fillLoginFieldWithKeyboard(
     selectors: string[],
     value: string,
@@ -493,16 +725,7 @@ export class InstaConnect {
       }, input);
       if (!visible) continue;
 
-      await input.click({ clickCount: 3 }).catch(() => null);
-      await this.page!.keyboard.down("Control").catch(() => null);
-      await this.page!.keyboard.press("KeyA").catch(() => null);
-      await this.page!.keyboard.up("Control").catch(() => null);
-      await this.page!.keyboard.press("Backspace").catch(() => null);
-      await input.type(value, { delay: 35 });
-      const currentValue = await this.page!.evaluate((el) => {
-        return el instanceof HTMLInputElement ? el.value : "";
-      }, input);
-      if (currentValue === value) {
+      if (await this.fillLoginInputHandle(input, value)) {
         return true;
       }
     }
@@ -868,6 +1091,26 @@ export class InstaConnect {
     return "unknown";
   }
 
+  private async hasSecurityCodeInputOnly(): Promise<boolean> {
+    const page = this.page;
+    if (!page) {
+      return false;
+    }
+
+    if (await this.hasLoginCredentialFields()) {
+      return false;
+    }
+
+    return (
+      Boolean(await page.$("#_r_h_")) ||
+      Boolean(await page.$('input[name="verificationCode"]')) ||
+      Boolean(await page.$('input[name="security_code"]')) ||
+      Boolean(await page.$('input[autocomplete="one-time-code"]')) ||
+      Boolean(await page.$('input[aria-label*="code" i]')) ||
+      Boolean(await page.$('input[placeholder*="code" i]'))
+    );
+  }
+
   private async detectLoginChallenge(): Promise<{
     required: boolean;
     type: LoginChallengeType;
@@ -901,16 +1144,16 @@ export class InstaConnect {
       };
     }
 
-    const hasCodeInput =
-      Boolean(await page.$("#_r_h_")) ||
-      Boolean(await page.$('input[name="verificationCode"]')) ||
-      Boolean(await page.$('input[name="security_code"]')) ||
-      Boolean(await page.$('input[autocomplete="one-time-code"]')) ||
-      Boolean(await page.$('input[inputmode="numeric"]')) ||
-      Boolean(await page.$('input[type="tel"]')) ||
-      Boolean(await page.$('input[aria-label*="code" i]')) ||
-      Boolean(await page.$('input[placeholder*="code" i]')) ||
-      Boolean(await page.$('form input[type="text"]'));
+    // Tela normal de login (usuario + senha) nao e challenge de codigo.
+    if (normalizedUrl.includes("/accounts/login") && (await this.hasLoginCredentialFields())) {
+      return {
+        required: false,
+        type: "unknown",
+        message: "",
+      };
+    }
+
+    const hasCodeInput = await this.hasSecurityCodeInputOnly();
     const promptFlags = await page.evaluate(() => {
       const text = (document.body?.innerText || "").toLowerCase();
       return {
@@ -1299,25 +1542,7 @@ export class InstaConnect {
     }
 
     try {
-      await this.acceptCookiesIfPresent();
-      if (!(await this.hasLoginCredentialFields())) {
-        await this.dismissSavedAccountLoginScreen();
-      }
-      await this.page!.waitForFunction(
-        () => {
-          const isVisible = (input: HTMLInputElement): boolean => {
-            if (input.offsetParent === null) return false;
-            const rect = input.getBoundingClientRect();
-            if (rect.width < 20 || rect.height < 4) return false;
-            return window.getComputedStyle(input).visibility !== "hidden";
-          };
-          const inputs = Array.from(document.querySelectorAll("input")).filter(
-            (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
-          );
-          return inputs.some((input) => input.type !== "password") && inputs.some((input) => input.type === "password");
-        },
-        { timeout: 60000 },
-      );
+      await this.prepareLoginForm();
     } catch {
       const currentUrl = this.page!.url();
       const pageTitle = await this.page!.title();
@@ -1326,34 +1551,7 @@ export class InstaConnect {
       );
     }
 
-    let fillResult = await this.fillInstagramLoginCredentials(username, password);
-    if (!fillResult.filledUsername) {
-      const filled = await this.fillLoginFieldWithKeyboard(
-        [
-          'input[name="username"]',
-          'input[autocomplete="username"]',
-          'input[type="email"]',
-          'input[autocomplete="email"]',
-          'input[aria-label*="email" i]',
-          'input[aria-label*="username" i]',
-          'input[aria-label*="telefone" i]',
-          'input[aria-label*="phone" i]',
-        ],
-        username,
-      );
-      fillResult = { ...fillResult, filledUsername: filled };
-    }
-    if (!fillResult.filledPassword) {
-      const filled = await this.fillLoginFieldWithKeyboard(
-        [
-          'input[name="password"]',
-          'input[autocomplete="current-password"]',
-          'input[type="password"]',
-        ],
-        password,
-      );
-      fillResult = { ...fillResult, filledPassword: filled };
-    }
+    const fillResult = await this.fillLoginCredentialsReliable(username, password);
 
     if (!fillResult.filledUsername || !fillResult.filledPassword) {
       const currentUrl = this.page!.url();
